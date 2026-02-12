@@ -1,0 +1,712 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# runner-mgr: CLI tool for managing GitHub Actions self-hosted runners
+# across multiple personal-account repositories.
+#
+# Runs as your macOS/Linux user account. Runner processes execute under
+# a dedicated user (default: "github"). Supports launchd (macOS) and
+# systemd (Linux).
+
+VERSION="0.1.0"
+CONFIG_DIR="${RUNNER_MGR_CONFIG_DIR:-$HOME/.config/runner-mgr}"
+CONFIG_FILE="$CONFIG_DIR/config"
+INSTANCES_BASE="/opt/github-runners"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+die() { echo "error: $*" >&2; exit 1; }
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "'$1' is required but not found in PATH"
+}
+
+detect_os() {
+  case "$(uname -s)" in
+    Darwin) echo "darwin" ;;
+    Linux)  echo "linux" ;;
+    *)      die "Unsupported OS: $(uname -s)" ;;
+  esac
+}
+
+detect_arch() {
+  case "$(uname -m)" in
+    x86_64)       echo "x64" ;;
+    arm64|aarch64) echo "arm64" ;;
+    *)            die "Unsupported architecture: $(uname -m)" ;;
+  esac
+}
+
+load_config() {
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    die "Not initialized. Run: runner-mgr init"
+  fi
+  # shellcheck source=/dev/null
+  source "$CONFIG_FILE"
+  : "${GITHUB_PAT:?GITHUB_PAT not set in config}"
+  : "${RUNNER_USER:?RUNNER_USER not set in config}"
+  : "${RUNNER_OS:?RUNNER_OS not set in config}"
+  : "${RUNNER_ARCH:?RUNNER_ARCH not set in config}"
+}
+
+gh_api() {
+  local method="$1" endpoint="$2"
+  shift 2
+  curl -fsSL \
+    -X "$method" \
+    -H "Authorization: token $GITHUB_PAT" \
+    -H "Accept: application/vnd.github+json" \
+    "https://api.github.com$endpoint" \
+    "$@"
+}
+
+# Sanitize owner/repo to a directory-safe name (owner__repo)
+repo_dir_name() {
+  echo "${1//\//__}"
+}
+
+instance_dir() {
+  echo "$INSTANCES_BASE/instances/$(repo_dir_name "$1")"
+}
+
+# Get runner service name for a repo
+service_name() {
+  local dir
+  dir="$(instance_dir "$1")"
+  if [[ "$RUNNER_OS" == "darwin" ]]; then
+    # launchd plist name installed by svc.sh
+    # svc.sh names it: actions.runner.<owner>-<repo>.<hostname>
+    # We extract it from the .service file svc.sh creates
+    if [[ -f "$dir/.service" ]]; then
+      cat "$dir/.service"
+    else
+      echo ""
+    fi
+  else
+    # systemd service name
+    if [[ -f "$dir/.service" ]]; then
+      cat "$dir/.service"
+    else
+      echo ""
+    fi
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+cmd_init() {
+  echo "runner-mgr init"
+  echo "==============="
+  echo ""
+
+  need_cmd curl
+  need_cmd jq
+
+  local os arch pat runner_user
+
+  os="$(detect_os)"
+  arch="$(detect_arch)"
+
+  # GitHub PAT
+  if [[ -f "$CONFIG_FILE" ]] && grep -q GITHUB_PAT "$CONFIG_FILE" 2>/dev/null; then
+    echo "Existing PAT found in config."
+    read -rp "Replace it? [y/N]: " replace
+    if [[ "$replace" != "y" && "$replace" != "Y" ]]; then
+      # shellcheck source=/dev/null
+      source "$CONFIG_FILE"
+      pat="$GITHUB_PAT"
+    fi
+  fi
+
+  if [[ -z "${pat:-}" ]]; then
+    echo "Enter a GitHub Personal Access Token (needs 'repo' scope)."
+    echo "Create one at: https://github.com/settings/tokens"
+    read -rsp "PAT: " pat
+    echo ""
+  fi
+
+  # Validate token
+  echo "Validating token..."
+  local user_json
+  user_json="$(curl -fsSL \
+    -H "Authorization: token $pat" \
+    -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/user" 2>/dev/null)" || die "Invalid token or network error"
+
+  local gh_user
+  gh_user="$(echo "$user_json" | jq -r '.login')"
+  echo "Authenticated as: $gh_user"
+
+  # Runner user
+  read -rp "Runner user account [github]: " runner_user
+  runner_user="${runner_user:-github}"
+
+  # Verify the user exists
+  if ! id "$runner_user" >/dev/null 2>&1; then
+    echo "Warning: User '$runner_user' does not exist on this system."
+    read -rp "Continue anyway? [y/N]: " cont
+    [[ "$cont" == "y" || "$cont" == "Y" ]] || exit 1
+  fi
+
+  # Create config directory
+  mkdir -p "$CONFIG_DIR"
+  chmod 700 "$CONFIG_DIR"
+
+  cat > "$CONFIG_FILE" <<EOF
+# runner-mgr configuration
+GITHUB_PAT="$pat"
+GITHUB_USER="$gh_user"
+RUNNER_USER="$runner_user"
+RUNNER_OS="$os"
+RUNNER_ARCH="$arch"
+INSTANCES_BASE="$INSTANCES_BASE"
+EOF
+  chmod 600 "$CONFIG_FILE"
+  echo "Config written to $CONFIG_FILE"
+
+  # Create instances base directory
+  if [[ ! -d "$INSTANCES_BASE" ]]; then
+    echo "Creating runner instances directory: $INSTANCES_BASE"
+    sudo mkdir -p "$INSTANCES_BASE"
+    sudo chown "$runner_user" "$INSTANCES_BASE"
+  fi
+
+  # Download runner binary template
+  local template_dir="$INSTANCES_BASE/template"
+  echo ""
+  echo "Downloading latest GitHub Actions runner..."
+
+  local runner_pkg_os
+  if [[ "$os" == "darwin" ]]; then
+    runner_pkg_os="osx"
+  else
+    runner_pkg_os="linux"
+  fi
+
+  local latest_version download_url
+  latest_version="$(curl -fsSL \
+    -H "Authorization: token $pat" \
+    "https://api.github.com/repos/actions/runner/releases/latest" | jq -r '.tag_name' | sed 's/^v//')"
+
+  download_url="https://github.com/actions/runner/releases/download/v${latest_version}/actions-runner-${runner_pkg_os}-${arch}-${latest_version}.tar.gz"
+
+  echo "Runner version: $latest_version"
+  echo "Package: actions-runner-${runner_pkg_os}-${arch}-${latest_version}.tar.gz"
+
+  sudo mkdir -p "$template_dir"
+  sudo chown "$runner_user" "$template_dir"
+
+  local tarball="/tmp/actions-runner-${runner_pkg_os}-${arch}-${latest_version}.tar.gz"
+  if [[ ! -f "$tarball" ]]; then
+    echo "Downloading..."
+    curl -fSL -o "$tarball" "$download_url"
+  else
+    echo "Using cached download: $tarball"
+  fi
+
+  echo "Extracting to $template_dir..."
+  sudo -u "$runner_user" tar xzf "$tarball" -C "$template_dir"
+
+  echo ""
+  echo "Init complete. Next steps:"
+  echo "  runner-mgr list          # see your repos"
+  echo "  runner-mgr add owner/repo  # register a runner"
+}
+
+cmd_list() {
+  load_config
+
+  echo "Fetching repositories for $GITHUB_USER..."
+  echo ""
+
+  local page=1 repos_json all_repos="[]"
+
+  while true; do
+    repos_json="$(gh_api GET "/user/repos?per_page=100&page=$page&affiliation=owner&sort=updated")"
+    local count
+    count="$(echo "$repos_json" | jq 'length')"
+    if [[ "$count" -eq 0 ]]; then
+      break
+    fi
+    all_repos="$(echo "$all_repos" "$repos_json" | jq -s 'add')"
+    if [[ "$count" -lt 100 ]]; then
+      break
+    fi
+    page=$((page + 1))
+  done
+
+  local total
+  total="$(echo "$all_repos" | jq 'length')"
+  echo "Found $total repositories."
+  echo ""
+
+  printf "%-40s  %-10s  %-12s\n" "REPOSITORY" "VISIBILITY" "RUNNER"
+  printf "%-40s  %-10s  %-12s\n" "----------" "----------" "------"
+
+  echo "$all_repos" | jq -r '.[] | [.full_name, (if .private then "private" else "public" end)] | @tsv' | \
+  while IFS=$'\t' read -r full_name visibility; do
+    local dir status
+    dir="$(instance_dir "$full_name")"
+    if [[ -d "$dir" ]]; then
+      local svc
+      svc="$(service_name "$full_name")"
+      if [[ -n "$svc" ]]; then
+        if is_service_running "$full_name"; then
+          status="running"
+        else
+          status="stopped"
+        fi
+      else
+        status="configured"
+      fi
+    else
+      status="-"
+    fi
+    printf "%-40s  %-10s  %-12s\n" "$full_name" "$visibility" "$status"
+  done
+}
+
+cmd_add() {
+  local repo="${1:?Usage: runner-mgr add <owner/repo> [label1,label2,...]}"
+  local labels="${2:-self-hosted}"
+  load_config
+
+  # Validate repo format
+  [[ "$repo" == */* ]] || die "Repository must be in 'owner/repo' format"
+
+  local dir
+  dir="$(instance_dir "$repo")"
+
+  if [[ -d "$dir" ]]; then
+    die "Runner already configured for $repo. Use 'remove' first to reconfigure."
+  fi
+
+  echo "Adding runner for $repo..."
+
+  # Ensure labels include self-hosted
+  if [[ "$labels" != *"self-hosted"* ]]; then
+    labels="self-hosted,$labels"
+  fi
+
+  # Get registration token
+  echo "Requesting registration token..."
+  local token_json reg_token
+  token_json="$(gh_api POST "/repos/$repo/actions/runners/registration-token")" || \
+    die "Failed to get registration token. Check that the repo exists and your PAT has 'repo' scope."
+  reg_token="$(echo "$token_json" | jq -r '.token')"
+
+  # Create instance directory from template
+  echo "Creating runner instance at $dir..."
+  sudo mkdir -p "$dir"
+  sudo chown "$RUNNER_USER" "$dir"
+  sudo -u "$RUNNER_USER" cp -a "$INSTANCES_BASE/template/." "$dir/"
+
+  # Configure the runner
+  local runner_name
+  runner_name="$(hostname)-$(repo_dir_name "$repo")"
+  # Truncate to 64 chars (GitHub limit)
+  runner_name="${runner_name:0:64}"
+
+  echo "Configuring runner (name: $runner_name)..."
+  sudo -u "$RUNNER_USER" bash -c "cd '$dir' && ./config.sh \
+    --url 'https://github.com/$repo' \
+    --token '$reg_token' \
+    --name '$runner_name' \
+    --labels '$labels' \
+    --unattended \
+    --replace"
+
+  # Install as a service
+  echo "Installing service (user: $RUNNER_USER)..."
+  (cd "$dir" && sudo ./svc.sh install "$RUNNER_USER")
+
+  # Start the service
+  echo "Starting service..."
+  (cd "$dir" && sudo ./svc.sh start)
+
+  echo ""
+  echo "Runner registered and running for $repo"
+  echo "  Instance: $dir"
+  echo "  Labels:   $labels"
+  echo "  Name:     $runner_name"
+}
+
+cmd_remove() {
+  local repo="${1:?Usage: runner-mgr remove <owner/repo>}"
+  load_config
+
+  local dir
+  dir="$(instance_dir "$repo")"
+
+  if [[ ! -d "$dir" ]]; then
+    die "No runner configured for $repo"
+  fi
+
+  echo "Removing runner for $repo..."
+
+  # Stop service if running
+  if [[ -f "$dir/.service" ]]; then
+    echo "Stopping service..."
+    (cd "$dir" && sudo ./svc.sh stop) 2>/dev/null || true
+
+    echo "Uninstalling service..."
+    (cd "$dir" && sudo ./svc.sh uninstall) 2>/dev/null || true
+  fi
+
+  # Get removal token and deregister
+  echo "Deregistering runner from GitHub..."
+  local token_json remove_token
+  token_json="$(gh_api POST "/repos/$repo/actions/runners/remove-token")" || true
+  remove_token="$(echo "$token_json" | jq -r '.token' 2>/dev/null)" || true
+
+  if [[ -n "$remove_token" && "$remove_token" != "null" ]]; then
+    sudo -u "$RUNNER_USER" bash -c "cd '$dir' && ./config.sh remove --token '$remove_token'" 2>/dev/null || true
+  fi
+
+  # Clean up the directory
+  echo "Removing instance directory..."
+  sudo rm -rf "$dir"
+
+  echo "Runner removed for $repo"
+}
+
+cmd_start() {
+  local target="${1:?Usage: runner-mgr start <owner/repo|all>}"
+  load_config
+
+  if [[ "$target" == "all" ]]; then
+    _for_each_instance _do_start
+  else
+    _do_start "$target"
+  fi
+}
+
+cmd_stop() {
+  local target="${1:?Usage: runner-mgr stop <owner/repo|all>}"
+  load_config
+
+  if [[ "$target" == "all" ]]; then
+    _for_each_instance _do_stop
+  else
+    _do_stop "$target"
+  fi
+}
+
+cmd_restart() {
+  local target="${1:?Usage: runner-mgr restart <owner/repo|all>}"
+  load_config
+
+  if [[ "$target" == "all" ]]; then
+    _for_each_instance _do_restart
+  else
+    _do_restart "$target"
+  fi
+}
+
+cmd_status() {
+  load_config
+
+  local instances_dir="$INSTANCES_BASE/instances"
+  if [[ ! -d "$instances_dir" ]]; then
+    echo "No runners configured."
+    return
+  fi
+
+  printf "%-40s  %-10s  %-20s\n" "REPOSITORY" "STATUS" "SERVICE"
+  printf "%-40s  %-10s  %-20s\n" "----------" "------" "-------"
+
+  for dir in "$instances_dir"/*/; do
+    [[ -d "$dir" ]] || continue
+    local name repo svc status
+
+    name="$(basename "$dir")"
+    repo="${name/__/\/}"
+    svc=""
+    status="unknown"
+
+    if [[ -f "$dir/.service" ]]; then
+      svc="$(cat "$dir/.service")"
+    fi
+
+    if [[ -n "$svc" ]]; then
+      if is_service_running "$repo"; then
+        status="running"
+      else
+        status="stopped"
+      fi
+    else
+      status="no service"
+    fi
+
+    printf "%-40s  %-10s  %-20s\n" "$repo" "$status" "$svc"
+  done
+}
+
+cmd_logs() {
+  local repo="${1:?Usage: runner-mgr logs <owner/repo>}"
+  local lines="${2:-50}"
+  load_config
+
+  local dir
+  dir="$(instance_dir "$repo")"
+
+  if [[ ! -d "$dir" ]]; then
+    die "No runner configured for $repo"
+  fi
+
+  if [[ "$RUNNER_OS" == "darwin" ]]; then
+    # macOS: check _diag directory for Worker and Runner logs
+    local diag_dir="$dir/_diag"
+    if [[ -d "$diag_dir" ]]; then
+      local latest_log
+      latest_log="$(ls -t "$diag_dir"/Runner_*.log 2>/dev/null | head -1)"
+      if [[ -n "$latest_log" ]]; then
+        echo "==> $latest_log <=="
+        tail -n "$lines" "$latest_log"
+      else
+        echo "No runner logs found in $diag_dir"
+      fi
+    else
+      echo "No _diag directory found at $diag_dir"
+    fi
+  else
+    # Linux: use journalctl
+    local svc
+    svc="$(service_name "$repo")"
+    if [[ -n "$svc" ]]; then
+      sudo journalctl -u "$svc" -n "$lines" --no-pager
+    else
+      echo "No service found. Checking _diag directory..."
+      local diag_dir="$dir/_diag"
+      if [[ -d "$diag_dir" ]]; then
+        local latest_log
+        latest_log="$(ls -t "$diag_dir"/Runner_*.log 2>/dev/null | head -1)"
+        if [[ -n "$latest_log" ]]; then
+          tail -n "$lines" "$latest_log"
+        fi
+      fi
+    fi
+  fi
+}
+
+cmd_update() {
+  load_config
+
+  echo "Checking for runner updates..."
+
+  local runner_pkg_os
+  if [[ "$RUNNER_OS" == "darwin" ]]; then
+    runner_pkg_os="osx"
+  else
+    runner_pkg_os="linux"
+  fi
+
+  local latest_version
+  latest_version="$(curl -fsSL \
+    -H "Authorization: token $GITHUB_PAT" \
+    "https://api.github.com/repos/actions/runner/releases/latest" | jq -r '.tag_name' | sed 's/^v//')"
+
+  local current_version="unknown"
+  if [[ -f "$INSTANCES_BASE/template/bin/Runner.Listener" ]]; then
+    current_version="$("$INSTANCES_BASE/template/bin/Runner.Listener" --version 2>/dev/null || echo "unknown")"
+  fi
+
+  echo "Current: $current_version"
+  echo "Latest:  $latest_version"
+
+  if [[ "$current_version" == "$latest_version" ]]; then
+    echo "Already up to date."
+    return
+  fi
+
+  read -rp "Update template to $latest_version? [y/N]: " confirm
+  [[ "$confirm" == "y" || "$confirm" == "Y" ]] || return
+
+  local download_url tarball template_dir
+  download_url="https://github.com/actions/runner/releases/download/v${latest_version}/actions-runner-${runner_pkg_os}-${RUNNER_ARCH}-${latest_version}.tar.gz"
+  tarball="/tmp/actions-runner-${runner_pkg_os}-${RUNNER_ARCH}-${latest_version}.tar.gz"
+  template_dir="$INSTANCES_BASE/template"
+
+  echo "Downloading runner $latest_version..."
+  curl -fSL -o "$tarball" "$download_url"
+
+  echo "Updating template..."
+  sudo rm -rf "$template_dir"
+  sudo mkdir -p "$template_dir"
+  sudo chown "$RUNNER_USER" "$template_dir"
+  sudo -u "$RUNNER_USER" tar xzf "$tarball" -C "$template_dir"
+
+  echo "Template updated to $latest_version"
+  echo ""
+  echo "Note: Existing runner instances are NOT updated automatically."
+  echo "To update a running instance, remove and re-add it:"
+  echo "  runner-mgr remove owner/repo && runner-mgr add owner/repo"
+}
+
+# ---------------------------------------------------------------------------
+# Service helpers
+# ---------------------------------------------------------------------------
+
+is_service_running() {
+  local repo="$1"
+  local dir svc
+  dir="$(instance_dir "$repo")"
+  svc=""
+
+  if [[ -f "$dir/.service" ]]; then
+    svc="$(cat "$dir/.service")"
+  fi
+
+  if [[ -z "$svc" ]]; then
+    return 1
+  fi
+
+  if [[ "$RUNNER_OS" == "darwin" ]]; then
+    sudo launchctl list "$svc" >/dev/null 2>&1
+  else
+    systemctl is-active --quiet "$svc" 2>/dev/null
+  fi
+}
+
+_do_start() {
+  local repo="$1"
+  local dir
+  dir="$(instance_dir "$repo")"
+
+  [[ -d "$dir" ]] || die "No runner configured for $repo"
+
+  echo "Starting $repo..."
+  (cd "$dir" && sudo ./svc.sh start)
+}
+
+_do_stop() {
+  local repo="$1"
+  local dir
+  dir="$(instance_dir "$repo")"
+
+  [[ -d "$dir" ]] || die "No runner configured for $repo"
+
+  echo "Stopping $repo..."
+  (cd "$dir" && sudo ./svc.sh stop)
+}
+
+_do_restart() {
+  local repo="$1"
+  local dir
+  dir="$(instance_dir "$repo")"
+
+  [[ -d "$dir" ]] || die "No runner configured for $repo"
+
+  echo "Restarting $repo..."
+  (cd "$dir" && sudo ./svc.sh stop)
+  (cd "$dir" && sudo ./svc.sh start)
+}
+
+_for_each_instance() {
+  local callback="$1"
+  local instances_dir="$INSTANCES_BASE/instances"
+
+  if [[ ! -d "$instances_dir" ]]; then
+    echo "No runners configured."
+    return
+  fi
+
+  for dir in "$instances_dir"/*/; do
+    [[ -d "$dir" ]] || continue
+    local name repo
+    name="$(basename "$dir")"
+    repo="${name/__/\/}"
+    "$callback" "$repo"
+  done
+}
+
+# ---------------------------------------------------------------------------
+# Usage
+# ---------------------------------------------------------------------------
+
+cmd_help() {
+  cat <<EOF
+runner-mgr $VERSION - Manage GitHub Actions self-hosted runners
+
+USAGE:
+  runner-mgr <command> [arguments]
+
+SETUP:
+  init                          First-time setup (PAT, runner user, download binary)
+  update                        Update the runner binary template
+
+REPOSITORY MANAGEMENT:
+  list                          List your repos with runner status
+  add <owner/repo> [labels]     Register a runner for a repo and start it
+  remove <owner/repo>           Stop, deregister, and remove a runner
+
+SERVICE CONTROL:
+  start <owner/repo|all>        Start runner service(s)
+  stop <owner/repo|all>         Stop runner service(s)
+  restart <owner/repo|all>      Restart runner service(s)
+  status                        Show status of all configured runners
+
+DIAGNOSTICS:
+  logs <owner/repo> [lines]     Show recent runner logs (default: 50 lines)
+
+EXAMPLES:
+  runner-mgr init
+  runner-mgr list
+  runner-mgr add myuser/web-app
+  runner-mgr add myuser/ios-app self-hosted,ios,xcode
+  runner-mgr status
+  runner-mgr stop myuser/ios-app
+  runner-mgr start all
+  runner-mgr logs myuser/web-app 100
+  runner-mgr remove myuser/web-app
+
+CONFIGURATION:
+  Config:     $CONFIG_DIR/config
+  Instances:  $INSTANCES_BASE/instances/
+  Template:   $INSTANCES_BASE/template/
+
+NOTES:
+  - Runs as your user account; runner processes execute as the configured
+    runner user (default: "github") via sudo.
+  - On macOS, services are managed via launchd (svc.sh uses LaunchDaemons).
+  - On Linux, services are managed via systemd (svc.sh uses systemd units).
+  - Each repo gets its own runner instance (personal accounts cannot share
+    runners across repos). Consider creating a free GitHub org if you need
+    shared runners via runner groups.
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Main dispatch
+# ---------------------------------------------------------------------------
+
+main() {
+  local cmd="${1:-help}"
+  shift || true
+
+  case "$cmd" in
+    init)    cmd_init "$@" ;;
+    list)    cmd_list "$@" ;;
+    add)     cmd_add "$@" ;;
+    remove)  cmd_remove "$@" ;;
+    start)   cmd_start "$@" ;;
+    stop)    cmd_stop "$@" ;;
+    restart) cmd_restart "$@" ;;
+    status)  cmd_status "$@" ;;
+    logs)    cmd_logs "$@" ;;
+    update)  cmd_update "$@" ;;
+    help|--help|-h)
+             cmd_help ;;
+    version|--version|-v)
+             echo "runner-mgr $VERSION" ;;
+    *)       echo "Unknown command: $cmd" >&2
+             echo "Run 'runner-mgr help' for usage." >&2
+             exit 1 ;;
+  esac
+}
+
+main "$@"
