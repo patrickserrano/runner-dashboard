@@ -15,19 +15,29 @@ permissions:
 
 jobs:
   commitlint:
-    name: Lint Commits
+    name: Lint PR Title
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v4
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha }}
-      - uses: wagoid/commitlint-github-action@v6
-        with:
-          configFile: .commitlintrc.yml
-          token: ${{ secrets.GITHUB_TOKEN }}
-          commitDepth: 1
+          types: |
+            feat
+            fix
+            docs
+            style
+            refactor
+            perf
+            test
+            build
+            ci
+            chore
+            revert
+          subjectPattern: ^[a-z].+$
+          subjectPatternError: |
+            The subject "{subject}" must start with a lowercase letter.
 
   check:
     name: Check
