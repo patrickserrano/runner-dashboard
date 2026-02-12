@@ -1,0 +1,9 @@
+[workspace]
+changelog_config = "cliff.toml"
+git_tag_enable = true
+git_release_enable = true
+git_release_draft = false
+
+[[package]]
+name = "runner-mgr"
+changelog_include = ["feat", "fix", "perf", "refactor", "docs", "build"]
