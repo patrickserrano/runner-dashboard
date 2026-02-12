@@ -32,7 +32,7 @@ split_commits = false
 commit_parsers = [
     { message = "^feat", group = "Features" },
     { message = "^fix", group = "Bug Fixes" },
-    { message = "^doc", group = "Documentation" },
+    { message = "^docs", group = "Documentation" },
     { message = "^perf", group = "Performance" },
     { message = "^refactor", group = "Refactoring" },
     { message = "^style", group = "Styling" },
@@ -46,4 +46,4 @@ commit_parsers = [
 protect_breaking_commits = false
 filter_commits = false
 tag_pattern = "v[0-9].*"
-sort_commits = "oldest"
+sort_commits = "newest"

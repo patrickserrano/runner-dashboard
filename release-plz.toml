@@ -2,7 +2,7 @@
 changelog_config = "cliff.toml"
 git_tag_enable = true
 git_release_enable = true
-git_release_draft = false
+git_release_draft = true
 
 [[package]]
 name = "runner-mgr"

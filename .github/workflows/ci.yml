@@ -26,6 +26,7 @@ jobs:
         with:
           configFile: .commitlintrc.yml
           token: ${{ secrets.GITHUB_TOKEN }}
+          commitDepth: 1
 
   check:
     name: Check
