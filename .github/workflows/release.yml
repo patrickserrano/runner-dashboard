@@ -1,0 +1,52 @@
+name: Release Binaries
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: runner-mgr-linux-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: runner-mgr-macos-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package binary
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/runner-mgr dist/
+          cd dist
+          tar czf ../${{ matrix.artifact }}.tar.gz runner-mgr
+          cd ..
+          shasum -a 256 ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ matrix.artifact }}.tar.gz
+            ${{ matrix.artifact }}.tar.gz.sha256
