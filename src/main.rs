@@ -79,6 +79,15 @@ enum Commands {
 
     /// Open the TUI dashboard
     Dashboard,
+
+    /// Import an existing runner directory
+    Import {
+        /// Path to the existing runner directory
+        path: String,
+        /// Repository in owner/repo format (auto-detected if not provided)
+        #[arg(short, long)]
+        repo: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -97,6 +106,7 @@ async fn main() {
         Commands::Logs { repo, lines } => cmd_logs(&repo, lines),
         Commands::Update => cmd_update().await,
         Commands::Dashboard => cmd_dashboard().await,
+        Commands::Import { path, repo } => cmd_import(&path, repo.as_deref()),
     };
 
     if let Err(e) = result {
@@ -472,4 +482,9 @@ async fn cmd_update() -> Result<()> {
 async fn cmd_dashboard() -> Result<()> {
     let config = Config::load()?;
     tui::run_dashboard(config).await
+}
+
+fn cmd_import(path: &str, repo: Option<&str>) -> Result<()> {
+    let config = Config::load()?;
+    runner::import_runner(&config, path, repo)
 }

@@ -1,8 +1,10 @@
+use serial_test::serial;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use tempfile::TempDir;
 
 #[test]
+#[serial]
 fn test_config_save_and_load() {
     let tmp = TempDir::new().unwrap();
     let config_dir = tmp.path().join("runner-mgr");
@@ -40,6 +42,7 @@ fn test_config_save_and_load() {
 }
 
 #[test]
+#[serial]
 fn test_config_load_missing_file() {
     let tmp = TempDir::new().unwrap();
     let config_dir = tmp.path().join("nonexistent");
@@ -58,6 +61,7 @@ fn test_config_load_missing_file() {
 }
 
 #[test]
+#[serial]
 fn test_config_dir_permissions() {
     let tmp = TempDir::new().unwrap();
     let config_dir = tmp.path().join("runner-mgr");

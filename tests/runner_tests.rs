@@ -1,3 +1,4 @@
+use serial_test::serial;
 use tempfile::TempDir;
 
 #[test]
@@ -128,4 +129,106 @@ fn test_get_logs_nonexistent_repo() {
     assert!(result.is_err());
     let err = format!("{:#}", result.unwrap_err());
     assert!(err.contains("No runner configured"));
+}
+
+// Tests for import functionality
+
+#[test]
+fn test_parse_repo_from_runner_config_valid() {
+    let content = r#"{"gitHubUrl": "https://github.com/myowner/myrepo"}"#;
+    let result = runner_mgr::runner::parse_repo_from_runner_config(content).unwrap();
+    assert_eq!(result, "myowner/myrepo");
+}
+
+#[test]
+fn test_parse_repo_from_runner_config_with_trailing_slash() {
+    let content = r#"{"gitHubUrl": "https://github.com/owner/repo/"}"#;
+    let result = runner_mgr::runner::parse_repo_from_runner_config(content).unwrap();
+    assert_eq!(result, "owner/repo");
+}
+
+#[test]
+fn test_parse_repo_from_runner_config_http_url() {
+    let content = r#"{"gitHubUrl": "http://github.com/owner/repo"}"#;
+    let result = runner_mgr::runner::parse_repo_from_runner_config(content).unwrap();
+    assert_eq!(result, "owner/repo");
+}
+
+#[test]
+fn test_parse_repo_from_runner_config_missing_url() {
+    let content = r#"{"somethingElse": "value"}"#;
+    let result = runner_mgr::runner::parse_repo_from_runner_config(content);
+    assert!(result.is_err());
+    let err = format!("{:#}", result.unwrap_err());
+    assert!(err.contains("No gitHubUrl found"));
+}
+
+#[test]
+fn test_parse_repo_from_runner_config_invalid_json() {
+    let content = "not valid json";
+    let result = runner_mgr::runner::parse_repo_from_runner_config(content);
+    assert!(result.is_err());
+    let err = format!("{:#}", result.unwrap_err());
+    assert!(err.contains("Failed to parse"));
+}
+
+#[test]
+fn test_parse_repo_from_runner_config_unexpected_format() {
+    let content = r#"{"gitHubUrl": "https://gitlab.com/owner/repo"}"#;
+    let result = runner_mgr::runner::parse_repo_from_runner_config(content);
+    assert!(result.is_err());
+    let err = format!("{:#}", result.unwrap_err());
+    assert!(err.contains("Unexpected gitHubUrl format"));
+}
+
+#[test]
+#[serial]
+fn test_import_runner_nonexistent_path() {
+    let tmp = TempDir::new().unwrap();
+    std::env::set_var("RUNNER_MGR_CONFIG_DIR", tmp.path().join("config"));
+
+    let config = runner_mgr::config::Config {
+        github_pat: "ghp_test".to_string(),
+        github_user: "user".to_string(),
+        runner_user: "github".to_string(),
+        runner_os: "darwin".to_string(),
+        runner_arch: "arm64".to_string(),
+        instances_base: tmp.path().join("runners").to_str().unwrap().to_string(),
+    };
+    config.save().unwrap();
+
+    let result = runner_mgr::runner::import_runner(&config, "/nonexistent/path", None);
+    assert!(result.is_err());
+    let err = format!("{:#}", result.unwrap_err());
+    assert!(err.contains("does not exist"));
+
+    std::env::remove_var("RUNNER_MGR_CONFIG_DIR");
+}
+
+#[test]
+#[serial]
+fn test_import_runner_not_a_runner_directory() {
+    let tmp = TempDir::new().unwrap();
+    let fake_runner = tmp.path().join("fake-runner");
+    std::fs::create_dir_all(&fake_runner).unwrap();
+    // Missing config.sh - not a valid runner directory
+
+    std::env::set_var("RUNNER_MGR_CONFIG_DIR", tmp.path().join("config"));
+
+    let config = runner_mgr::config::Config {
+        github_pat: "ghp_test".to_string(),
+        github_user: "user".to_string(),
+        runner_user: "github".to_string(),
+        runner_os: "darwin".to_string(),
+        runner_arch: "arm64".to_string(),
+        instances_base: tmp.path().join("runners").to_str().unwrap().to_string(),
+    };
+    config.save().unwrap();
+
+    let result = runner_mgr::runner::import_runner(&config, fake_runner.to_str().unwrap(), None);
+    assert!(result.is_err());
+    let err = format!("{:#}", result.unwrap_err());
+    assert!(err.contains("Not a valid runner directory"));
+
+    std::env::remove_var("RUNNER_MGR_CONFIG_DIR");
 }

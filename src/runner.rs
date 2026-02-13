@@ -396,3 +396,250 @@ fn run_cmd_in_dir(dir: &Path, program: &str, args: &[&str]) -> Result<()> {
     }
     Ok(())
 }
+
+/// Import an existing runner directory into runner-mgr management
+pub fn import_runner(config: &Config, path: &str, repo_override: Option<&str>) -> Result<()> {
+    let source_path = Path::new(path);
+
+    // Expand ~ to home directory
+    let source_path = if let Some(stripped) = path.strip_prefix("~/") {
+        dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?
+            .join(stripped)
+    } else {
+        source_path.to_path_buf()
+    };
+
+    if !source_path.exists() {
+        anyhow::bail!("Runner directory does not exist: {}", source_path.display());
+    }
+
+    // Check for config.sh to verify it's a runner directory
+    if !source_path.join("config.sh").exists() {
+        anyhow::bail!(
+            "Not a valid runner directory (missing config.sh): {}",
+            source_path.display()
+        );
+    }
+
+    // Determine the repository
+    let repo = if let Some(r) = repo_override {
+        r.to_string()
+    } else {
+        // Try to read from .runner file
+        let runner_file = source_path.join(".runner");
+        if runner_file.exists() {
+            let content =
+                fs::read_to_string(&runner_file).context("Failed to read .runner file")?;
+            parse_repo_from_runner_config(&content)?
+        } else {
+            anyhow::bail!(
+                "Could not auto-detect repository. No .runner file found.\n\
+                 Use --repo owner/repo to specify the repository."
+            );
+        }
+    };
+
+    if !repo.contains('/') {
+        anyhow::bail!("Repository must be in 'owner/repo' format");
+    }
+
+    println!("Importing runner for {repo}...");
+    println!("  Source: {}", source_path.display());
+
+    // Check if already managed
+    let target_dir = config.instance_dir(&repo);
+    if target_dir.exists() {
+        anyhow::bail!(
+            "Runner already configured for {repo} at {}",
+            target_dir.display()
+        );
+    }
+
+    // Create instances directory if needed
+    let instances_dir = config.instances_dir();
+    if !instances_dir.exists() {
+        run_cmd("sudo", &["mkdir", "-p", &instances_dir.to_string_lossy()])?;
+        run_cmd(
+            "sudo",
+            &[
+                "chown",
+                &config.runner_user,
+                &instances_dir.to_string_lossy(),
+            ],
+        )?;
+    }
+
+    // Create symlink to existing runner
+    println!("Creating symlink...");
+    let source_abs = source_path
+        .canonicalize()
+        .context("Failed to get absolute path of source directory")?;
+
+    run_cmd(
+        "sudo",
+        &[
+            "-u",
+            &config.runner_user,
+            "ln",
+            "-s",
+            &source_abs.to_string_lossy(),
+            &target_dir.to_string_lossy(),
+        ],
+    )?;
+
+    // Detect service name
+    let service_name = detect_service_name(&source_path, config);
+    if let Some(ref svc) = service_name {
+        println!("  Detected service: {svc}");
+        // Write .service file if not already present
+        let service_file = source_path.join(".service");
+        if !service_file.exists() {
+            fs::write(&service_file, svc).ok();
+        }
+    }
+
+    println!();
+    println!("Runner imported for {repo}");
+    println!(
+        "  Instance: {} -> {}",
+        target_dir.display(),
+        source_abs.display()
+    );
+    if let Some(svc) = service_name {
+        println!("  Service:  {svc}");
+    } else {
+        println!("  Service:  (not detected - runner may not be installed as service)");
+    }
+
+    Ok(())
+}
+
+/// Parse repository from .runner JSON config
+pub fn parse_repo_from_runner_config(content: &str) -> Result<String> {
+    // The .runner file is JSON with a "gitHubUrl" field like "https://github.com/owner/repo"
+    #[derive(serde::Deserialize)]
+    struct RunnerConfig {
+        #[serde(rename = "gitHubUrl")]
+        github_url: Option<String>,
+    }
+
+    let config: RunnerConfig =
+        serde_json::from_str(content).context("Failed to parse .runner file as JSON")?;
+
+    let url = config
+        .github_url
+        .ok_or_else(|| anyhow::anyhow!("No gitHubUrl found in .runner file"))?;
+
+    // Extract owner/repo from URL like "https://github.com/owner/repo"
+    let repo = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))
+        .ok_or_else(|| anyhow::anyhow!("Unexpected gitHubUrl format: {url}"))?;
+
+    Ok(repo.trim_end_matches('/').to_string())
+}
+
+/// Try to detect the launchd/systemd service name for an existing runner
+fn detect_service_name(runner_dir: &Path, config: &Config) -> Option<String> {
+    // First check if .service file already exists
+    let service_file = runner_dir.join(".service");
+    if let Ok(content) = fs::read_to_string(&service_file) {
+        let name = content.trim().to_string();
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+
+    // Try to detect from svc.sh status or launchd plist
+    if config.runner_os == "darwin" {
+        // On macOS, look for launchd plist referencing this directory
+        // The service is typically named like "actions.runner.owner-repo.hostname"
+        let runner_name_file = runner_dir.join(".runner");
+        if let Ok(content) = fs::read_to_string(&runner_name_file) {
+            #[derive(serde::Deserialize)]
+            struct RunnerConfig {
+                #[serde(rename = "agentName")]
+                agent_name: Option<String>,
+            }
+            if let Ok(rc) = serde_json::from_str::<RunnerConfig>(&content) {
+                if let Some(name) = rc.agent_name {
+                    // Service name format: actions.runner.{org/repo}.{runner-name}
+                    // But we can try to find it in LaunchDaemons
+                    let possible_patterns = [
+                        format!("actions.runner.*.{name}"),
+                        format!("actions.runner.*{}", name.replace('-', "")),
+                    ];
+
+                    // Check LaunchDaemons for matching plist
+                    if let Ok(entries) = fs::read_dir("/Library/LaunchDaemons") {
+                        for entry in entries.flatten() {
+                            let filename = entry.file_name().to_string_lossy().to_string();
+                            if filename.starts_with("actions.runner.")
+                                && std::path::Path::new(&filename)
+                                    .extension()
+                                    .is_some_and(|ext| ext.eq_ignore_ascii_case("plist"))
+                            {
+                                let svc_name = filename.trim_end_matches(".plist");
+                                // Read plist to check if it points to our runner dir
+                                if let Ok(plist_content) = fs::read_to_string(entry.path()) {
+                                    let dir_str = runner_dir.to_string_lossy();
+                                    if plist_content.contains(&*dir_str) {
+                                        return Some(svc_name.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Fallback: return first matching pattern
+                    for _pattern in &possible_patterns {
+                        if let Ok(entries) = fs::read_dir("/Library/LaunchDaemons") {
+                            for entry in entries.flatten() {
+                                let filename = entry.file_name().to_string_lossy().to_string();
+                                if filename.contains(&name)
+                                    && std::path::Path::new(&filename)
+                                        .extension()
+                                        .is_some_and(|ext| ext.eq_ignore_ascii_case("plist"))
+                                {
+                                    return Some(filename.trim_end_matches(".plist").to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        // On Linux, check systemd
+        let runner_name_file = runner_dir.join(".runner");
+        if let Ok(content) = fs::read_to_string(&runner_name_file) {
+            #[derive(serde::Deserialize)]
+            struct RunnerConfig {
+                #[serde(rename = "agentName")]
+                agent_name: Option<String>,
+            }
+            if let Ok(rc) = serde_json::from_str::<RunnerConfig>(&content) {
+                if let Some(name) = rc.agent_name {
+                    // Try to find matching systemd service
+                    let output = Command::new("systemctl")
+                        .args(["list-units", "--type=service", "--all", "--no-pager"])
+                        .output()
+                        .ok()?;
+
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    for line in stdout.lines() {
+                        if line.contains(&name) && line.contains("actions.runner") {
+                            let parts: Vec<&str> = line.split_whitespace().collect();
+                            if let Some(svc) = parts.first() {
+                                return Some(svc.trim_end_matches(".service").to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
