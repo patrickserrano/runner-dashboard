@@ -26,6 +26,16 @@ GitHub personal accounts can't share a single self-hosted runner across repos (t
 
 ## Installation
 
+### Homebrew (macOS)
+
+```bash
+brew install patrickserrano/tap/runner-mgr
+```
+
+### From releases
+
+Download the latest binary from the [Releases page](https://github.com/patrickserrano/runner-dashboard/releases) for your platform.
+
 ### From source
 
 ```bash
@@ -34,10 +44,6 @@ cd runner-dashboard
 cargo build --release
 sudo cp target/release/runner-mgr /usr/local/bin/
 ```
-
-### From CI artifacts
-
-Download the latest build from the [Actions tab](https://github.com/patrickserrano/runner-dashboard/actions) for your platform.
 
 ## Quick start
 
@@ -94,6 +100,7 @@ The TUI shows two panels:
 | `logs <owner/repo> [lines]` | Show recent runner logs (default: 50) |
 | `update` | Update the runner binary template |
 | `dashboard` | Open the TUI dashboard |
+| `import <path> [--repo]` | Import an existing runner directory |
 
 ## Dashboard keybindings
 
