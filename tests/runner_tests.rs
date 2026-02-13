@@ -182,6 +182,14 @@ fn test_parse_repo_from_runner_config_unexpected_format() {
 }
 
 #[test]
+fn test_parse_repo_from_runner_config_with_bom() {
+    // UTF-8 BOM followed by valid JSON
+    let content = "\u{feff}{\"gitHubUrl\": \"https://github.com/owner/repo\"}";
+    let result = runner_mgr::runner::parse_repo_from_runner_config(content).unwrap();
+    assert_eq!(result, "owner/repo");
+}
+
+#[test]
 #[serial]
 fn test_import_runner_nonexistent_path() {
     let tmp = TempDir::new().unwrap();
