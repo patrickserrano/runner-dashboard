@@ -524,6 +524,9 @@ pub fn parse_repo_from_runner_config(content: &str) -> Result<String> {
         github_url: Option<String>,
     }
 
+    // Strip UTF-8 BOM if present (some Windows tools add this)
+    let content = content.strip_prefix('\u{feff}').unwrap_or(content);
+
     let config: RunnerConfig =
         serde_json::from_str(content).context("Failed to parse .runner file as JSON")?;
 
