@@ -565,7 +565,9 @@ fn detect_service_name(runner_dir: &Path, config: &Config) -> Option<String> {
                 #[serde(rename = "agentName")]
                 agent_name: Option<String>,
             }
-            if let Ok(rc) = serde_json::from_str::<RunnerConfig>(&content) {
+            // Strip UTF-8 BOM if present
+            let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
+            if let Ok(rc) = serde_json::from_str::<RunnerConfig>(content) {
                 if let Some(name) = rc.agent_name {
                     // Service name format: actions.runner.{org/repo}.{runner-name}
                     // But we can try to find it in LaunchDaemons
@@ -622,7 +624,9 @@ fn detect_service_name(runner_dir: &Path, config: &Config) -> Option<String> {
                 #[serde(rename = "agentName")]
                 agent_name: Option<String>,
             }
-            if let Ok(rc) = serde_json::from_str::<RunnerConfig>(&content) {
+            // Strip UTF-8 BOM if present
+            let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
+            if let Ok(rc) = serde_json::from_str::<RunnerConfig>(content) {
                 if let Some(name) = rc.agent_name {
                     // Try to find matching systemd service
                     let output = Command::new("systemctl")
