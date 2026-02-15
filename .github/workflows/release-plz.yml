@@ -33,7 +33,7 @@ jobs:
     # Only run when release-plz merges its PR (detected by commit message pattern)
     if: >-
       github.event_name == 'push' &&
-      startsWith(github.event.head_commit.message, 'chore(release)')
+      startsWith(github.event.head_commit.message, 'chore: release')
     steps:
       - uses: actions/checkout@v4
         with:
