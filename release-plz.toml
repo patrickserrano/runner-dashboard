@@ -7,3 +7,4 @@ git_release_draft = true
 [[package]]
 name = "runner-mgr"
 changelog_include = ["feat", "fix", "perf", "refactor", "docs", "build"]
+publish = false  # Not published to crates.io
