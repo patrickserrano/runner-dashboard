@@ -266,14 +266,22 @@ pub fn start_runner(config: &Config, repo: &str) -> Result<()> {
         // The service runs as the user specified in the plist's UserName key
         run_cmd(
             "sudo",
-            &["launchctl", "kickstart", "-k", &format!("system/{service_name}")],
+            &[
+                "launchctl",
+                "kickstart",
+                "-k",
+                &format!("system/{service_name}"),
+            ],
         )
         .context("Failed to start runner service")?;
     } else {
         // Linux: use systemctl for system service
         // The service runs as the user specified in the unit file's User= directive
-        run_cmd("sudo", &["systemctl", "start", &format!("{service_name}.service")])
-            .context("Failed to start runner service")?;
+        run_cmd(
+            "sudo",
+            &["systemctl", "start", &format!("{service_name}.service")],
+        )
+        .context("Failed to start runner service")?;
     }
     Ok(())
 }
@@ -302,13 +310,21 @@ pub fn stop_runner(config: &Config, repo: &str) -> Result<()> {
         // macOS: use launchctl kill for system LaunchDaemon
         run_cmd(
             "sudo",
-            &["launchctl", "kill", "SIGTERM", &format!("system/{service_name}")],
+            &[
+                "launchctl",
+                "kill",
+                "SIGTERM",
+                &format!("system/{service_name}"),
+            ],
         )
         .context("Failed to stop runner service")?;
     } else {
         // Linux: use systemctl for system service
-        run_cmd("sudo", &["systemctl", "stop", &format!("{service_name}.service")])
-            .context("Failed to stop runner service")?;
+        run_cmd(
+            "sudo",
+            &["systemctl", "stop", &format!("{service_name}.service")],
+        )
+        .context("Failed to stop runner service")?;
     }
     Ok(())
 }
