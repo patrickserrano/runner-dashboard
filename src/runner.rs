@@ -85,8 +85,10 @@ fn check_service_status(config: &Config, service_name: Option<&str>) -> RunnerSt
     };
 
     if config.runner_os == "darwin" {
+        // Extract just the service label for launchctl list
+        let service_label = extract_service_label(svc);
         let output = Command::new("sudo")
-            .args(["launchctl", "list", svc])
+            .args(["launchctl", "list", &service_label])
             .output();
 
         match output {
@@ -103,6 +105,56 @@ fn check_service_status(config: &Config, service_name: Option<&str>) -> RunnerSt
             _ => RunnerStatus::Stopped,
         }
     }
+}
+
+/// Extract service label from a plist path or return as-is if already a label
+fn extract_service_label(service_name: &str) -> String {
+    let path = Path::new(service_name);
+    if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("plist")) {
+        // Extract filename without path and extension
+        path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(service_name)
+            .to_string()
+    } else {
+        service_name.to_string()
+    }
+}
+
+/// Parse macOS service info and return the service label and target.
+/// The target is in format `gui/<uid>/<label>` or `system/<label>`.
+fn parse_macos_service(service_name: &str, runner_user: &str) -> Result<(String, String)> {
+    let service_label = extract_service_label(service_name);
+
+    // Determine if this is a LaunchAgent (user) or LaunchDaemon (system)
+    let is_launch_agent =
+        service_name.contains("/LaunchAgents/") || service_name.contains("Library/LaunchAgents");
+
+    let service_target = if is_launch_agent {
+        // LaunchAgent: need user's UID
+        let uid = get_user_uid(runner_user)?;
+        format!("gui/{uid}/{service_label}")
+    } else {
+        // LaunchDaemon: use system domain
+        format!("system/{service_label}")
+    };
+
+    Ok((service_label, service_target))
+}
+
+/// Get the UID for a given username
+fn get_user_uid(username: &str) -> Result<u32> {
+    let output = Command::new("id")
+        .args(["-u", username])
+        .output()
+        .context("Failed to get user UID")?;
+
+    if !output.status.success() {
+        anyhow::bail!("Failed to get UID for user {username}");
+    }
+
+    let uid_str = String::from_utf8_lossy(&output.stdout);
+    uid_str.trim().parse::<u32>().context("Failed to parse UID")
 }
 
 pub async fn add_runner(config: &Config, repo: &str, labels: &str) -> Result<()> {
@@ -262,18 +314,24 @@ pub fn start_runner(config: &Config, repo: &str) -> Result<()> {
     println!("Starting {repo}...");
 
     if config.runner_os == "darwin" {
-        // macOS: use launchctl kickstart for system LaunchDaemon
-        // The service runs as the user specified in the plist's UserName key
-        run_cmd(
-            "sudo",
-            &[
-                "launchctl",
-                "kickstart",
-                "-k",
-                &format!("system/{service_name}"),
-            ],
-        )
-        .context("Failed to start runner service")?;
+        // macOS: use launchctl to start the service
+        // The service could be a LaunchAgent (user) or LaunchDaemon (system)
+        let (service_label, service_target) =
+            parse_macos_service(service_name, &config.runner_user)?;
+        let plist_path = Path::new(service_name);
+        let is_plist = plist_path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("plist"));
+        run_cmd("sudo", &["launchctl", "kickstart", "-k", &service_target])
+            .or_else(|_| {
+                // Fallback: try loading the plist directly if kickstart fails
+                if is_plist && plist_path.exists() {
+                    run_cmd("sudo", &["launchctl", "load", service_name])
+                } else {
+                    Err(anyhow::anyhow!("Failed to start service {service_label}"))
+                }
+            })
+            .context("Failed to start runner service")?;
     } else {
         // Linux: use systemctl for system service
         // The service runs as the user specified in the unit file's User= directive
@@ -307,17 +365,23 @@ pub fn stop_runner(config: &Config, repo: &str) -> Result<()> {
     println!("Stopping {repo}...");
 
     if config.runner_os == "darwin" {
-        // macOS: use launchctl kill for system LaunchDaemon
-        run_cmd(
-            "sudo",
-            &[
-                "launchctl",
-                "kill",
-                "SIGTERM",
-                &format!("system/{service_name}"),
-            ],
-        )
-        .context("Failed to stop runner service")?;
+        // macOS: use launchctl to stop the service
+        let (service_label, service_target) =
+            parse_macos_service(service_name, &config.runner_user)?;
+        let plist_path = Path::new(service_name);
+        let is_plist = plist_path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("plist"));
+        run_cmd("sudo", &["launchctl", "kill", "SIGTERM", &service_target])
+            .or_else(|_| {
+                // Fallback: try unloading the plist directly if kill fails
+                if is_plist && plist_path.exists() {
+                    run_cmd("sudo", &["launchctl", "unload", service_name])
+                } else {
+                    Err(anyhow::anyhow!("Failed to stop service {service_label}"))
+                }
+            })
+            .context("Failed to stop runner service")?;
     } else {
         // Linux: use systemctl for system service
         run_cmd(
