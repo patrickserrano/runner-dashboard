@@ -2,9 +2,21 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::config::Config;
 use crate::github::GitHubClient;
+
+static VERBOSE: AtomicBool = AtomicBool::new(false);
+
+/// Enable verbose mode for command execution
+pub fn set_verbose(enabled: bool) {
+    VERBOSE.store(enabled, Ordering::SeqCst);
+}
+
+fn is_verbose() -> bool {
+    VERBOSE.load(Ordering::SeqCst)
+}
 
 #[derive(Debug, Clone)]
 pub struct RunnerInstance {
@@ -430,31 +442,79 @@ pub fn get_runner_logs(config: &Config, repo: &str, lines: u32) -> Result<String
 }
 
 fn run_cmd(program: &str, args: &[&str]) -> Result<()> {
-    let status = Command::new(program)
+    if is_verbose() {
+        eprintln!("[verbose] Running: {} {}", program, args.join(" "));
+    }
+
+    let output = Command::new(program)
         .args(args)
-        .status()
+        .output()
         .with_context(|| format!("Failed to execute: {} {}", program, args.join(" ")))?;
 
-    if !status.success() {
+    if is_verbose() {
+        if !output.stdout.is_empty() {
+            eprintln!(
+                "[verbose] stdout: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+        if !output.stderr.is_empty() {
+            eprintln!(
+                "[verbose] stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        eprintln!("[verbose] exit code: {:?}", output.status.code());
+    }
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!(
-            "Command failed: {} {} (exit code: {:?})",
+            "Command failed: {} {} (exit code: {:?})\n{}",
             program,
             args.join(" "),
-            status.code()
+            output.status.code(),
+            stderr
         );
     }
     Ok(())
 }
 
 fn run_cmd_in_dir(dir: &Path, program: &str, args: &[&str]) -> Result<()> {
-    let status = Command::new(program)
+    if is_verbose() {
+        eprintln!(
+            "[verbose] Running in {}: {} {}",
+            dir.display(),
+            program,
+            args.join(" ")
+        );
+    }
+
+    let output = Command::new(program)
         .current_dir(dir)
         .args(args)
-        .status()
+        .output()
         .with_context(|| format!("Failed to execute: {} {}", program, args.join(" ")))?;
 
-    if !status.success() {
-        anyhow::bail!("Command failed: {} {}", program, args.join(" "));
+    if is_verbose() {
+        if !output.stdout.is_empty() {
+            eprintln!(
+                "[verbose] stdout: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+        if !output.stderr.is_empty() {
+            eprintln!(
+                "[verbose] stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        eprintln!("[verbose] exit code: {:?}", output.status.code());
+    }
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Command failed: {} {}\n{}", program, args.join(" "), stderr);
     }
     Ok(())
 }

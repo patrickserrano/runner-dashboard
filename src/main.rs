@@ -17,6 +17,10 @@ use github::GitHubClient;
     about = "Manage GitHub Actions self-hosted runners"
 )]
 struct Cli {
+    /// Enable verbose output (show commands being executed)
+    #[arg(short, long, global = true)]
+    verbose: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -93,6 +97,11 @@ enum Commands {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+
+    // Enable verbose mode if requested
+    if cli.verbose {
+        runner::set_verbose(true);
+    }
 
     let result = match cli.command {
         Commands::Init => cmd_init().await,
