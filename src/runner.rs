@@ -247,10 +247,42 @@ pub fn start_runner(config: &Config, repo: &str) -> Result<()> {
         anyhow::bail!("No runner configured for {repo}");
     }
 
+    // Get service name
+    let instances = list_instances(config);
+    let instance = instances
+        .iter()
+        .find(|i| i.repo == repo)
+        .ok_or_else(|| anyhow::anyhow!("Runner not found for {repo}"))?;
+
+    let service_name = instance
+        .service_name
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No service configured for {repo}"))?;
+
     println!("Starting {repo}...");
-    let svc_sh = dir.join("svc.sh");
-    run_cmd_in_dir(&dir, "sudo", &[&svc_sh.to_string_lossy(), "start"])
+
+    if config.runner_os == "darwin" {
+        // macOS: use launchctl kickstart for system LaunchDaemon
+        // The service runs as the user specified in the plist's UserName key
+        run_cmd(
+            "sudo",
+            &[
+                "launchctl",
+                "kickstart",
+                "-k",
+                &format!("system/{service_name}"),
+            ],
+        )
         .context("Failed to start runner service")?;
+    } else {
+        // Linux: use systemctl for system service
+        // The service runs as the user specified in the unit file's User= directive
+        run_cmd(
+            "sudo",
+            &["systemctl", "start", &format!("{service_name}.service")],
+        )
+        .context("Failed to start runner service")?;
+    }
     Ok(())
 }
 
@@ -260,10 +292,40 @@ pub fn stop_runner(config: &Config, repo: &str) -> Result<()> {
         anyhow::bail!("No runner configured for {repo}");
     }
 
+    // Get service name
+    let instances = list_instances(config);
+    let instance = instances
+        .iter()
+        .find(|i| i.repo == repo)
+        .ok_or_else(|| anyhow::anyhow!("Runner not found for {repo}"))?;
+
+    let service_name = instance
+        .service_name
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No service configured for {repo}"))?;
+
     println!("Stopping {repo}...");
-    let svc_sh = dir.join("svc.sh");
-    run_cmd_in_dir(&dir, "sudo", &[&svc_sh.to_string_lossy(), "stop"])
+
+    if config.runner_os == "darwin" {
+        // macOS: use launchctl kill for system LaunchDaemon
+        run_cmd(
+            "sudo",
+            &[
+                "launchctl",
+                "kill",
+                "SIGTERM",
+                &format!("system/{service_name}"),
+            ],
+        )
         .context("Failed to stop runner service")?;
+    } else {
+        // Linux: use systemctl for system service
+        run_cmd(
+            "sudo",
+            &["systemctl", "stop", &format!("{service_name}.service")],
+        )
+        .context("Failed to stop runner service")?;
+    }
     Ok(())
 }
 
