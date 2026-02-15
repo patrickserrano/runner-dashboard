@@ -110,7 +110,10 @@ fn check_service_status(config: &Config, service_name: Option<&str>) -> RunnerSt
 /// Extract service label from a plist path or return as-is if already a label
 fn extract_service_label(service_name: &str) -> String {
     let path = Path::new(service_name);
-    if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("plist")) {
+    if path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("plist"))
+    {
         // Extract filename without path and extension
         path.file_stem()
             .and_then(|s| s.to_str())
