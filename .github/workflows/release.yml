@@ -105,6 +105,7 @@ jobs:
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: |
             ${{ matrix.artifact }}.tar.gz
             ${{ matrix.artifact }}.tar.gz.sha256
