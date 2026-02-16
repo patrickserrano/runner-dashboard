@@ -66,7 +66,9 @@ runner-mgr runs services under a dedicated user account (default: `github`). Cre
 sudo dscl . -create /Users/github
 sudo dscl . -create /Users/github UserShell /bin/bash
 sudo dscl . -create /Users/github RealName "GitHub Runner"
-sudo dscl . -create /Users/github UniqueID 501  # Use an unused ID
+# Find an unused UID (typically above 500 for service accounts)
+NEXT_UID=$(dscl . -list /Users UniqueID | awk '{print $2}' | sort -n | tail -1 | xargs -I{} expr {} + 1)
+sudo dscl . -create /Users/github UniqueID $NEXT_UID
 sudo dscl . -create /Users/github PrimaryGroupID 20
 sudo dscl . -create /Users/github NFSHomeDirectory /Users/github
 sudo mkdir -p /Users/github

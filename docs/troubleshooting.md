@@ -131,9 +131,12 @@ launchd may have issues with the plist.
 # Check launchd errors
 launchctl list | grep actions.runner
 
-# Unload and reload the service
-launchctl unload ~/Library/LaunchAgents/actions.runner.*.plist
-launchctl load ~/Library/LaunchAgents/actions.runner.*.plist
+# Unload and reload a specific service (replace with actual plist name)
+# First, find the plist:
+ls ~/Library/LaunchAgents/ | grep actions.runner
+# Then unload/load it:
+launchctl unload ~/Library/LaunchAgents/actions.runner.OWNER-REPO.HOSTNAME.plist
+launchctl load ~/Library/LaunchAgents/actions.runner.OWNER-REPO.HOSTNAME.plist
 
 # Check system logs
 log show --predicate 'subsystem == "com.apple.launchd"' --last 5m | grep runner

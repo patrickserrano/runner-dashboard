@@ -257,8 +257,8 @@ done
 #!/bin/bash
 # restart-offline.sh
 
-# Get offline runners from status
-runner-mgr status | grep -E "stopped|offline" | awk '{print $1}' | while read target; do
+# Get stopped or unknown runners from status
+runner-mgr status | grep -E "stopped|unknown" | awk '{print $1}' | while read target; do
     echo "Restarting $target..."
     runner-mgr restart "$target"
 done

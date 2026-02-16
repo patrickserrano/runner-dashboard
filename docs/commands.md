@@ -186,6 +186,7 @@ runner-mgr restart <target>
 
 ```bash
 runner-mgr restart youruser/web-app
+runner-mgr restart org:myorg
 runner-mgr restart all
 ```
 

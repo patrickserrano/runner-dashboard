@@ -69,7 +69,9 @@ Services are installed as user launch agents:
 
 **Location:** `~/Library/LaunchAgents/`
 
-**Service name pattern:** `actions.runner.<owner>-<repo>.<hostname>`
+**Service name patterns:**
+- Repository runners: `actions.runner.<owner>-<repo>.<hostname>`
+- Organization runners: `actions.runner.<org>.<hostname>`
 
 To view service status:
 
@@ -83,7 +85,9 @@ Services are installed as user systemd services:
 
 **Location:** `~/.config/systemd/user/`
 
-**Service name pattern:** `actions.runner.<owner>-<repo>.<hostname>.service`
+**Service name patterns:**
+- Repository runners: `actions.runner.<owner>-<repo>.<hostname>.service`
+- Organization runners: `actions.runner.<org>.<hostname>.service`
 
 To view service status:
 
@@ -125,4 +129,4 @@ If you need to rotate your GitHub PAT:
 2. Run `runner-mgr init` and enter the new PAT
 3. Revoke the old PAT in GitHub
 
-Runners will automatically use the new PAT on their next GitHub API call.
+**Note**: The PAT is only used by runner-mgr for registration and management API calls. Running runners authenticate with GitHub using the registration token issued during setup, so existing runners will continue to work. The new PAT will be used the next time you run a runner-mgr command that calls the GitHub API.
