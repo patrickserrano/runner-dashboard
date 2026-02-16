@@ -1,16 +1,17 @@
 # runner-mgr
 
-CLI tool for managing GitHub Actions self-hosted runners across multiple personal-account repositories, with a built-in TUI dashboard.
+CLI tool for managing GitHub Actions self-hosted runners across multiple repositories and organizations, with a built-in TUI dashboard.
 
 ![CI](https://github.com/patrickserrano/runner-dashboard/actions/workflows/ci.yml/badge.svg)
 
 ## Why
 
-GitHub personal accounts can't share a single self-hosted runner across repos (that requires an org with runner groups). This tool manages the per-repo runner instances for you — registration, service lifecycle, and monitoring — from a single command.
+GitHub personal accounts can't share a single self-hosted runner across repos (that requires an org with runner groups). This tool manages the per-repo and per-org runner instances for you — registration, service lifecycle, and monitoring — from a single command.
 
 ## Features
 
-- **Multi-repo runner management** — register, start, stop, and remove runners for any of your repos
+- **Multi-repo and org runner management** — register, start, stop, and remove runners for repositories (`owner/repo`) or organizations (`org:orgname`)
+- **Auto-discovery** — scan your system for existing runner installations and import them
 - **TUI dashboard** — live-updating terminal UI showing runner status, GitHub connectivity, workflow run history, and start/stop controls
 - **Cross-platform** — macOS (launchd) and Linux (systemd) service management
 - **Multi-user** — runs as your user account while runner processes execute under a dedicated service user (e.g. `github`)
@@ -62,18 +63,39 @@ It then downloads the latest GitHub Actions runner binary to `/opt/github-runner
 ### 2. Add runners
 
 ```bash
-# Basic — registers with the "self-hosted" label
+# Repository runner — basic (registers with the "self-hosted" label)
 runner-mgr add youruser/web-app
 
-# With custom labels for iOS builds
+# Repository runner — with custom labels for iOS builds
 runner-mgr add youruser/ios-app self-hosted,ios,xcode,macos
+
+# Organization runner — shared across all repos in the org
+runner-mgr add org:myorg self-hosted,linux
 ```
 
 Each `add` command:
 1. Gets a registration token from the GitHub API
-2. Creates a runner instance at `/opt/github-runners/instances/<owner>__<repo>/`
+2. Creates a runner instance at `/opt/github-runners/instances/<owner>__<repo>/` (or `org__<orgname>/` for orgs)
 3. Configures the runner via `config.sh --unattended`
 4. Installs and starts a system service under the dedicated user
+
+### 2b. Import existing runners (optional)
+
+If you already have GitHub Actions runners installed, you can import them:
+
+```bash
+# Scan for existing runners
+runner-mgr scan
+
+# Scan and automatically import all discovered runners
+runner-mgr scan --auto-import
+
+# Scan additional directories
+runner-mgr scan --paths ~/my-runners,/opt/custom-runners
+
+# Import a specific runner directory
+runner-mgr import ~/actions-runner
+```
 
 ### 3. Open the dashboard
 
@@ -91,16 +113,21 @@ The TUI shows two panels:
 |---------|-------------|
 | `init` | First-time setup (PAT, runner user, download binary) |
 | `list` | List your repos with runner status |
-| `add <owner/repo> [labels]` | Register a runner and start it |
-| `remove <owner/repo>` | Stop, deregister, and clean up a runner |
-| `start <owner/repo\|all>` | Start runner service(s) |
-| `stop <owner/repo\|all>` | Stop runner service(s) |
-| `restart <owner/repo\|all>` | Restart runner service(s) |
+| `add <target> [labels]` | Register a runner and start it (`owner/repo` or `org:name`) |
+| `remove <target>` | Stop, deregister, and clean up a runner |
+| `start <target\|all>` | Start runner service(s) |
+| `stop <target\|all>` | Stop runner service(s) |
+| `restart <target\|all>` | Restart runner service(s) |
 | `status` | Show status of all configured runners |
-| `logs <owner/repo> [lines]` | Show recent runner logs (default: 50) |
+| `logs <target> [lines]` | Show recent runner logs (default: 50) |
 | `update` | Update the runner binary template |
 | `dashboard` | Open the TUI dashboard |
-| `import <path> [--repo]` | Import an existing runner directory |
+| `scan [--paths] [--auto-import]` | Discover existing runner installations |
+| `import <path> [--target]` | Import an existing runner directory |
+
+**Target formats:**
+- Repository: `owner/repo` (e.g., `youruser/web-app`)
+- Organization: `org:name` (e.g., `org:myorg`)
 
 ## Dashboard keybindings
 
@@ -121,6 +148,7 @@ The TUI shows two panels:
 | `~/.config/runner-mgr/config.toml` | PAT, runner user, OS/arch settings |
 | `/opt/github-runners/template/` | Runner binary template (shared across instances) |
 | `/opt/github-runners/instances/<owner>__<repo>/` | Per-repo runner instances |
+| `/opt/github-runners/instances/org__<orgname>/` | Per-org runner instances |
 
 The config file is created with `600` permissions and the config directory with `700` permissions to protect your PAT.
 
@@ -144,11 +172,11 @@ The config file is created with `600` permissions and the config directory with 
 ┌─────────────────────────────────────────────────┐
 │  /opt/github-runners/instances/                 │
 │                                                 │
-│  ┌──────────────┐  ┌──────────────┐             │
-│  │ owner__repo1 │  │ owner__repo2 │  ...        │
-│  │ (systemd/    │  │ (systemd/    │             │
-│  │  launchd)    │  │  launchd)    │             │
-│  └──────────────┘  └──────────────┘             │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────┐ │
+│  │ owner__repo1 │  │ owner__repo2 │  │org__org│ │
+│  │ (systemd/    │  │ (systemd/    │  │(org    │ │
+│  │  launchd)    │  │  launchd)    │  │runner) │ │
+│  └──────────────┘  └──────────────┘  └────────┘ │
 └─────────────────────────────────────────────────┘
 ```
 

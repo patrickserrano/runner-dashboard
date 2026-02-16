@@ -4,6 +4,8 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
+use crate::github::RunnerScope;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub github_pat: String,
@@ -64,9 +66,8 @@ impl Config {
         PathBuf::from(&self.instances_base).join("template")
     }
 
-    pub fn instance_dir(&self, repo: &str) -> PathBuf {
-        let safe_name = repo.replace('/', "__");
-        self.instances_dir().join(safe_name)
+    pub fn instance_dir(&self, scope: &RunnerScope) -> PathBuf {
+        self.instances_dir().join(scope.to_dir_name())
     }
 
     pub fn detect_os() -> String {

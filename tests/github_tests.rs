@@ -1,4 +1,4 @@
-use runner_mgr::github::GitHubClient;
+use runner_mgr::github::{GitHubClient, RunnerScope};
 
 #[tokio::test]
 async fn test_client_creation() {
@@ -26,20 +26,22 @@ async fn test_list_repos_invalid_token() {
 #[tokio::test]
 async fn test_registration_token_invalid_repo() {
     let client = GitHubClient::new("ghp_invalid");
-    let result = client.get_registration_token("nonexistent/repo").await;
+    let scope = RunnerScope::parse("nonexistent/repo").unwrap();
+    let result = client.get_registration_token(&scope).await;
     assert!(result.is_err());
 }
 
 #[tokio::test]
 async fn test_list_runners_invalid_token() {
     let client = GitHubClient::new("ghp_invalid");
-    let result = client.list_runners("nonexistent/repo").await;
+    let scope = RunnerScope::parse("nonexistent/repo").unwrap();
+    let result = client.list_runners(&scope).await;
     assert!(result.is_err());
 }
 
 #[tokio::test]
 async fn test_list_workflow_runs_invalid_token() {
     let client = GitHubClient::new("ghp_invalid");
-    let result = client.list_workflow_runs("nonexistent/repo", 5).await;
+    let result = client.list_workflow_runs("nonexistent", "repo", 5).await;
     assert!(result.is_err());
 }

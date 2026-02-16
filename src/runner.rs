@@ -1,13 +1,13 @@
 use anyhow::{Context, Result};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::Mutex;
 
 use crate::config::Config;
-use crate::github::GitHubClient;
+use crate::github::{GitHubClient, RunnerScope};
 
 static VERBOSE: AtomicBool = AtomicBool::new(false);
 static LOG_SENDER: Mutex<Option<SyncSender<String>>> = Mutex::new(None);
@@ -41,8 +41,8 @@ fn verbose_log(msg: &str) {
 
 #[derive(Debug, Clone)]
 pub struct RunnerInstance {
-    pub repo: String,
-    pub dir: std::path::PathBuf,
+    pub scope: RunnerScope,
+    pub dir: PathBuf,
     pub service_name: Option<String>,
     pub status: RunnerStatus,
 }
@@ -88,19 +88,23 @@ pub fn list_instances(config: &Config) -> Vec<RunnerInstance> {
             continue;
         };
 
-        let repo = name.replacen("__", "/", 1);
+        // Parse the directory name into a RunnerScope
+        let Some(scope) = RunnerScope::from_dir_name(&name) else {
+            continue;
+        };
+
         let service_name = read_service_name(&path);
         let status = check_service_status(config, service_name.as_deref());
 
         instances.push(RunnerInstance {
-            repo,
+            scope,
             dir: path,
             service_name,
             status,
         });
     }
 
-    instances.sort_by(|a, b| a.repo.cmp(&b.repo));
+    instances.sort_by(|a, b| a.scope.to_display().cmp(&b.scope.to_display()));
     instances
 }
 
@@ -193,14 +197,14 @@ fn get_user_uid(username: &str) -> Result<u32> {
     uid_str.trim().parse::<u32>().context("Failed to parse UID")
 }
 
-pub async fn add_runner(config: &Config, repo: &str, labels: &str) -> Result<()> {
-    let dir = config.instance_dir(repo);
+pub async fn add_runner(config: &Config, scope: &RunnerScope, labels: &str) -> Result<()> {
+    let dir = config.instance_dir(scope);
 
     if dir.exists() {
-        anyhow::bail!("Runner already configured for {repo}. Use 'remove' first.");
+        anyhow::bail!("Runner already configured for {scope}. Use 'remove' first.");
     }
 
-    println!("Adding runner for {repo}...");
+    println!("Adding runner for {scope}...");
 
     let mut labels = labels.to_string();
     if !labels.contains("self-hosted") {
@@ -210,7 +214,7 @@ pub async fn add_runner(config: &Config, repo: &str, labels: &str) -> Result<()>
     // Get registration token
     println!("Requesting registration token...");
     let client = GitHubClient::new(&config.github_pat);
-    let reg = client.get_registration_token(repo).await?;
+    let reg = client.get_registration_token(scope).await?;
 
     // Create instance directory from template
     println!("Creating runner instance at {}...", dir.display());
@@ -236,8 +240,8 @@ pub async fn add_runner(config: &Config, repo: &str, labels: &str) -> Result<()>
         |_| "runner".to_string(),
         |h| h.to_string_lossy().to_string(),
     );
-    let safe_repo = repo.replace('/', "__");
-    let runner_name = format!("{hostname}-{safe_repo}");
+    let safe_name = scope.to_dir_name();
+    let runner_name = format!("{hostname}-{safe_name}");
     let runner_name = &runner_name[..runner_name.len().min(64)];
 
     println!("Configuring runner (name: {runner_name})...");
@@ -249,7 +253,7 @@ pub async fn add_runner(config: &Config, repo: &str, labels: &str) -> Result<()>
             &config.runner_user,
             &config_sh.to_string_lossy(),
             "--url",
-            &format!("https://github.com/{repo}"),
+            &scope.github_url(),
             "--token",
             &reg.token,
             "--name",
@@ -275,7 +279,7 @@ pub async fn add_runner(config: &Config, repo: &str, labels: &str) -> Result<()>
     run_cmd_in_dir(&dir, "sudo", &[&svc_sh.to_string_lossy(), "start"])?;
 
     println!();
-    println!("Runner registered and running for {repo}");
+    println!("Runner registered and running for {scope}");
     println!("  Instance: {}", dir.display());
     println!("  Labels:   {labels}");
     println!("  Name:     {runner_name}");
@@ -283,14 +287,14 @@ pub async fn add_runner(config: &Config, repo: &str, labels: &str) -> Result<()>
     Ok(())
 }
 
-pub async fn remove_runner(config: &Config, repo: &str) -> Result<()> {
-    let dir = config.instance_dir(repo);
+pub async fn remove_runner(config: &Config, scope: &RunnerScope) -> Result<()> {
+    let dir = config.instance_dir(scope);
 
     if !dir.exists() {
-        anyhow::bail!("No runner configured for {repo}");
+        anyhow::bail!("No runner configured for {scope}");
     }
 
-    println!("Removing runner for {repo}...");
+    println!("Removing runner for {scope}...");
 
     let svc_sh = dir.join("svc.sh");
 
@@ -306,7 +310,7 @@ pub async fn remove_runner(config: &Config, repo: &str) -> Result<()> {
     // Deregister from GitHub
     println!("Deregistering runner from GitHub...");
     let client = GitHubClient::new(&config.github_pat);
-    if let Ok(token) = client.get_remove_token(repo).await {
+    if let Ok(token) = client.get_remove_token(scope).await {
         let config_sh = dir.join("config.sh");
         let _ = run_cmd(
             "sudo",
@@ -325,29 +329,29 @@ pub async fn remove_runner(config: &Config, repo: &str) -> Result<()> {
     println!("Removing instance directory...");
     run_cmd("sudo", &["rm", "-rf", &dir.to_string_lossy()])?;
 
-    println!("Runner removed for {repo}");
+    println!("Runner removed for {scope}");
     Ok(())
 }
 
-pub fn start_runner(config: &Config, repo: &str) -> Result<()> {
-    let dir = config.instance_dir(repo);
+pub fn start_runner(config: &Config, scope: &RunnerScope) -> Result<()> {
+    let dir = config.instance_dir(scope);
     if !dir.exists() {
-        anyhow::bail!("No runner configured for {repo}");
+        anyhow::bail!("No runner configured for {scope}");
     }
 
     // Get service name
     let instances = list_instances(config);
     let instance = instances
         .iter()
-        .find(|i| i.repo == repo)
-        .ok_or_else(|| anyhow::anyhow!("Runner not found for {repo}"))?;
+        .find(|i| &i.scope == scope)
+        .ok_or_else(|| anyhow::anyhow!("Runner not found for {scope}"))?;
 
     let service_name = instance
         .service_name
         .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("No service configured for {repo}"))?;
+        .ok_or_else(|| anyhow::anyhow!("No service configured for {scope}"))?;
 
-    println!("Starting {repo}...");
+    println!("Starting {scope}...");
 
     if config.runner_os == "darwin" {
         // macOS: use launchctl to start the service
@@ -380,25 +384,25 @@ pub fn start_runner(config: &Config, repo: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn stop_runner(config: &Config, repo: &str) -> Result<()> {
-    let dir = config.instance_dir(repo);
+pub fn stop_runner(config: &Config, scope: &RunnerScope) -> Result<()> {
+    let dir = config.instance_dir(scope);
     if !dir.exists() {
-        anyhow::bail!("No runner configured for {repo}");
+        anyhow::bail!("No runner configured for {scope}");
     }
 
     // Get service name
     let instances = list_instances(config);
     let instance = instances
         .iter()
-        .find(|i| i.repo == repo)
-        .ok_or_else(|| anyhow::anyhow!("Runner not found for {repo}"))?;
+        .find(|i| &i.scope == scope)
+        .ok_or_else(|| anyhow::anyhow!("Runner not found for {scope}"))?;
 
     let service_name = instance
         .service_name
         .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("No service configured for {repo}"))?;
+        .ok_or_else(|| anyhow::anyhow!("No service configured for {scope}"))?;
 
-    println!("Stopping {repo}...");
+    println!("Stopping {scope}...");
 
     if config.runner_os == "darwin" {
         // macOS: use launchctl to stop the service
@@ -429,40 +433,40 @@ pub fn stop_runner(config: &Config, repo: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn restart_runner(config: &Config, repo: &str) -> Result<()> {
-    stop_runner(config, repo)?;
-    start_runner(config, repo)?;
+pub fn restart_runner(config: &Config, scope: &RunnerScope) -> Result<()> {
+    stop_runner(config, scope)?;
+    start_runner(config, scope)?;
     Ok(())
 }
 
 pub fn start_all(config: &Config) {
     for instance in list_instances(config) {
-        if let Err(e) = start_runner(config, &instance.repo) {
-            eprintln!("Failed to start {}: {e}", instance.repo);
+        if let Err(e) = start_runner(config, &instance.scope) {
+            eprintln!("Failed to start {}: {e}", instance.scope);
         }
     }
 }
 
 pub fn stop_all(config: &Config) {
     for instance in list_instances(config) {
-        if let Err(e) = stop_runner(config, &instance.repo) {
-            eprintln!("Failed to stop {}: {e}", instance.repo);
+        if let Err(e) = stop_runner(config, &instance.scope) {
+            eprintln!("Failed to stop {}: {e}", instance.scope);
         }
     }
 }
 
 pub fn restart_all(config: &Config) {
     for instance in list_instances(config) {
-        if let Err(e) = restart_runner(config, &instance.repo) {
-            eprintln!("Failed to restart {}: {e}", instance.repo);
+        if let Err(e) = restart_runner(config, &instance.scope) {
+            eprintln!("Failed to restart {}: {e}", instance.scope);
         }
     }
 }
 
-pub fn get_runner_logs(config: &Config, repo: &str, lines: u32) -> Result<String> {
-    let dir = config.instance_dir(repo);
+pub fn get_runner_logs(config: &Config, scope: &RunnerScope, lines: u32) -> Result<String> {
+    let dir = config.instance_dir(scope);
     if !dir.exists() {
-        anyhow::bail!("No runner configured for {repo}");
+        anyhow::bail!("No runner configured for {scope}");
     }
 
     if config.runner_os == "darwin" {
@@ -612,7 +616,7 @@ fn run_cmd_in_dir(dir: &Path, program: &str, args: &[&str]) -> Result<()> {
 }
 
 /// Import an existing runner directory into runner-mgr management
-pub fn import_runner(config: &Config, path: &str, repo_override: Option<&str>) -> Result<()> {
+pub fn import_runner(config: &Config, path: &str, scope_override: Option<&str>) -> Result<()> {
     let source_path = Path::new(path);
 
     // Expand ~ to home directory
@@ -636,36 +640,33 @@ pub fn import_runner(config: &Config, path: &str, repo_override: Option<&str>) -
         );
     }
 
-    // Determine the repository
-    let repo = if let Some(r) = repo_override {
-        r.to_string()
+    // Determine the scope
+    let scope = if let Some(s) = scope_override {
+        RunnerScope::parse(s)?
     } else {
         // Try to read from .runner file
         let runner_file = source_path.join(".runner");
         if runner_file.exists() {
             let content =
                 fs::read_to_string(&runner_file).context("Failed to read .runner file")?;
-            parse_repo_from_runner_config(&content)?
+            parse_scope_from_runner_config(&content)?
         } else {
             anyhow::bail!(
-                "Could not auto-detect repository. No .runner file found.\n\
-                 Use --repo owner/repo to specify the repository."
+                "Could not auto-detect scope. No .runner file found.\n\
+                 Use --target owner/repo (for repo) or --target org:name (for org) to specify."
             );
         }
     };
 
-    if !repo.contains('/') {
-        anyhow::bail!("Repository must be in 'owner/repo' format");
-    }
-
-    println!("Importing runner for {repo}...");
+    println!("Importing runner for {scope}...");
     println!("  Source: {}", source_path.display());
 
     // Check if already managed
-    let target_dir = config.instance_dir(&repo);
+    let target_dir = config.instance_dir(&scope);
     if target_dir.exists() {
         anyhow::bail!(
-            "Runner already configured for {repo} at {}",
+            "Runner already configured for {} at {}",
+            scope,
             target_dir.display()
         );
     }
@@ -714,7 +715,7 @@ pub fn import_runner(config: &Config, path: &str, repo_override: Option<&str>) -
     }
 
     println!();
-    println!("Runner imported for {repo}");
+    println!("Runner imported for {scope}");
     println!(
         "  Instance: {} -> {}",
         target_dir.display(),
@@ -729,9 +730,10 @@ pub fn import_runner(config: &Config, path: &str, repo_override: Option<&str>) -
     Ok(())
 }
 
-/// Parse repository from .runner JSON config
-pub fn parse_repo_from_runner_config(content: &str) -> Result<String> {
+/// Parse scope (repository or organization) from .runner JSON config
+pub fn parse_scope_from_runner_config(content: &str) -> Result<RunnerScope> {
     // The .runner file is JSON with a "gitHubUrl" field like "https://github.com/owner/repo"
+    // or "https://github.com/org" for organization runners
     #[derive(serde::Deserialize)]
     struct RunnerConfig {
         #[serde(rename = "gitHubUrl")]
@@ -748,13 +750,19 @@ pub fn parse_repo_from_runner_config(content: &str) -> Result<String> {
         .github_url
         .ok_or_else(|| anyhow::anyhow!("No gitHubUrl found in .runner file"))?;
 
-    // Extract owner/repo from URL like "https://github.com/owner/repo"
-    let repo = url
-        .strip_prefix("https://github.com/")
-        .or_else(|| url.strip_prefix("http://github.com/"))
-        .ok_or_else(|| anyhow::anyhow!("Unexpected gitHubUrl format: {url}"))?;
+    RunnerScope::from_github_url(&url)
+}
 
-    Ok(repo.trim_end_matches('/').to_string())
+/// Legacy function for backward compatibility - parses repository from .runner config
+/// Returns the repo string in "owner/repo" format
+pub fn parse_repo_from_runner_config(content: &str) -> Result<String> {
+    let scope = parse_scope_from_runner_config(content)?;
+    match scope {
+        RunnerScope::Repository { owner, repo } => Ok(format!("{owner}/{repo}")),
+        RunnerScope::Organization { org } => {
+            anyhow::bail!("Expected repository URL but found organization: {org}")
+        }
+    }
 }
 
 /// Try to detect the launchd/systemd service name for an existing runner
@@ -863,4 +871,157 @@ fn detect_service_name(runner_dir: &Path, config: &Config) -> Option<String> {
     }
 
     None
+}
+
+/// Represents a runner directory discovered by the scanner
+#[derive(Debug, Clone)]
+pub struct DiscoveredRunner {
+    pub path: PathBuf,
+    pub scope: RunnerScope,
+    pub agent_name: Option<String>,
+}
+
+/// Scan common locations for existing runner directories
+/// Returns a list of discovered runners that can be imported
+pub fn scan_for_runners(extra_paths: Option<&str>) -> Vec<DiscoveredRunner> {
+    let mut discovered = Vec::new();
+    let mut scanned_paths = std::collections::HashSet::new();
+
+    // Build list of paths to scan
+    let mut paths_to_scan: Vec<PathBuf> = Vec::new();
+
+    // Add home directory patterns
+    if let Some(home) = dirs::home_dir() {
+        // ~/actions-runner*
+        if let Ok(entries) = fs::read_dir(&home) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("actions-runner") && entry.path().is_dir() {
+                    paths_to_scan.push(entry.path());
+                }
+            }
+        }
+
+        // ~/runners/*
+        let runners_dir = home.join("runners");
+        if runners_dir.is_dir() {
+            if let Ok(entries) = fs::read_dir(&runners_dir) {
+                for entry in entries.flatten() {
+                    if entry.path().is_dir() {
+                        paths_to_scan.push(entry.path());
+                    }
+                }
+            }
+        }
+    }
+
+    // /opt/*runner*
+    if let Ok(entries) = fs::read_dir("/opt") {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            if name.contains("runner") && entry.path().is_dir() {
+                paths_to_scan.push(entry.path());
+            }
+        }
+    }
+
+    // /home/*/actions-runner*
+    if let Ok(home_entries) = fs::read_dir("/home") {
+        for home_entry in home_entries.flatten() {
+            if home_entry.path().is_dir() {
+                if let Ok(entries) = fs::read_dir(home_entry.path()) {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if name.starts_with("actions-runner") && entry.path().is_dir() {
+                            paths_to_scan.push(entry.path());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Add user-specified extra paths
+    if let Some(extra) = extra_paths {
+        for path_str in extra.split(',') {
+            let path_str = path_str.trim();
+            if path_str.is_empty() {
+                continue;
+            }
+
+            let path = if let Some(stripped) = path_str.strip_prefix("~/") {
+                if let Some(home) = dirs::home_dir() {
+                    home.join(stripped)
+                } else {
+                    PathBuf::from(path_str)
+                }
+            } else {
+                PathBuf::from(path_str)
+            };
+
+            if path.is_dir() {
+                paths_to_scan.push(path);
+            }
+        }
+    }
+
+    // Scan each path for valid runner directories
+    for path in paths_to_scan {
+        // Canonicalize to avoid duplicates
+        let Ok(canonical) = path.canonicalize() else {
+            continue;
+        };
+
+        if scanned_paths.contains(&canonical) {
+            continue;
+        }
+        scanned_paths.insert(canonical.clone());
+
+        // Check if this is a valid runner directory
+        if let Some(runner) = validate_runner_directory(&canonical) {
+            discovered.push(runner);
+        }
+    }
+
+    // Sort by path for consistent output
+    discovered.sort_by(|a, b| a.path.cmp(&b.path));
+
+    discovered
+}
+
+/// Validate a directory as a runner and extract its scope
+fn validate_runner_directory(path: &Path) -> Option<DiscoveredRunner> {
+    #[derive(serde::Deserialize)]
+    struct RunnerConfig {
+        #[serde(rename = "gitHubUrl")]
+        github_url: Option<String>,
+        #[serde(rename = "agentName")]
+        agent_name: Option<String>,
+    }
+
+    // Must have config.sh
+    if !path.join("config.sh").exists() {
+        return None;
+    }
+
+    // Must have .runner file with valid gitHubUrl
+    let runner_file = path.join(".runner");
+    if !runner_file.exists() {
+        return None;
+    }
+
+    let content = fs::read_to_string(&runner_file).ok()?;
+
+    // Parse the .runner file
+    let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
+    let config: RunnerConfig = serde_json::from_str(content).ok()?;
+
+    let url = config.github_url?;
+    let scope = RunnerScope::from_github_url(&url).ok()?;
+
+    Some(DiscoveredRunner {
+        path: path.to_path_buf(),
+        scope,
+        agent_name: config.agent_name,
+    })
 }

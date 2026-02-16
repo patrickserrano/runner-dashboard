@@ -1,6 +1,160 @@
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
+use std::fmt;
+use std::hash::{Hash, Hasher};
+
+/// Represents either a repository or organization scope for runner management
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunnerScope {
+    Repository { owner: String, repo: String },
+    Organization { org: String },
+}
+
+impl Hash for RunnerScope {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            RunnerScope::Repository { owner, repo } => {
+                "repo".hash(state);
+                owner.hash(state);
+                repo.hash(state);
+            }
+            RunnerScope::Organization { org } => {
+                "org".hash(state);
+                org.hash(state);
+            }
+        }
+    }
+}
+
+impl RunnerScope {
+    /// Parse an identifier string into a `RunnerScope`
+    /// Accepts "owner/repo" for repositories or "org:name" for organizations
+    pub fn parse(identifier: &str) -> Result<Self> {
+        if let Some(org_name) = identifier.strip_prefix("org:") {
+            if org_name.is_empty() {
+                anyhow::bail!("Organization name cannot be empty");
+            }
+            if org_name.contains('/') {
+                anyhow::bail!("Organization name cannot contain '/'");
+            }
+            Ok(RunnerScope::Organization {
+                org: org_name.to_string(),
+            })
+        } else if identifier.contains('/') {
+            let parts: Vec<&str> = identifier.splitn(2, '/').collect();
+            if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+                anyhow::bail!("Repository must be in 'owner/repo' format");
+            }
+            Ok(RunnerScope::Repository {
+                owner: parts[0].to_string(),
+                repo: parts[1].to_string(),
+            })
+        } else {
+            anyhow::bail!(
+                "Invalid identifier '{identifier}'. Use 'owner/repo' for repositories or 'org:name' for organizations"
+            );
+        }
+    }
+
+    /// Convert to a safe directory name (no slashes or colons)
+    pub fn to_dir_name(&self) -> String {
+        match self {
+            RunnerScope::Repository { owner, repo } => format!("{owner}__{repo}"),
+            RunnerScope::Organization { org } => format!("org__{org}"),
+        }
+    }
+
+    /// Convert to display format for user output
+    pub fn to_display(&self) -> String {
+        match self {
+            RunnerScope::Repository { owner, repo } => format!("{owner}/{repo}"),
+            RunnerScope::Organization { org } => format!("org:{org}"),
+        }
+    }
+
+    /// Get the GitHub URL for this scope
+    pub fn github_url(&self) -> String {
+        match self {
+            RunnerScope::Repository { owner, repo } => {
+                format!("https://github.com/{owner}/{repo}")
+            }
+            RunnerScope::Organization { org } => format!("https://github.com/{org}"),
+        }
+    }
+
+    /// Parse a `RunnerScope` from a GitHub URL
+    pub fn from_github_url(url: &str) -> Result<Self> {
+        let path = url
+            .strip_prefix("https://github.com/")
+            .or_else(|| url.strip_prefix("http://github.com/"))
+            .ok_or_else(|| anyhow::anyhow!("Unexpected GitHub URL format: {url}"))?;
+
+        let path = path.trim_end_matches('/');
+        let parts: Vec<&str> = path.split('/').collect();
+
+        match parts.len() {
+            1 if !parts[0].is_empty() => {
+                // Single component = organization
+                Ok(RunnerScope::Organization {
+                    org: parts[0].to_string(),
+                })
+            }
+            2 if !parts[0].is_empty() && !parts[1].is_empty() => {
+                // Two components = repository
+                Ok(RunnerScope::Repository {
+                    owner: parts[0].to_string(),
+                    repo: parts[1].to_string(),
+                })
+            }
+            _ => anyhow::bail!("Cannot determine scope from URL: {url}"),
+        }
+    }
+
+    /// Parse a directory name back into a `RunnerScope`
+    pub fn from_dir_name(dir_name: &str) -> Option<Self> {
+        if let Some(org_name) = dir_name.strip_prefix("org__") {
+            if !org_name.is_empty() {
+                return Some(RunnerScope::Organization {
+                    org: org_name.to_string(),
+                });
+            }
+        }
+
+        // Try to parse as owner__repo
+        if let Some(idx) = dir_name.find("__") {
+            let owner = &dir_name[..idx];
+            let repo = &dir_name[idx + 2..];
+            if !owner.is_empty() && !repo.is_empty() && owner != "org" {
+                return Some(RunnerScope::Repository {
+                    owner: owner.to_string(),
+                    repo: repo.to_string(),
+                });
+            }
+        }
+
+        None
+    }
+
+    /// Check if this scope supports workflow runs (repos only)
+    pub fn supports_workflow_runs(&self) -> bool {
+        matches!(self, RunnerScope::Repository { .. })
+    }
+
+    /// Get the API path segment for this scope
+    pub fn api_path(&self) -> String {
+        match self {
+            RunnerScope::Repository { owner, repo } => format!("repos/{owner}/{repo}"),
+            RunnerScope::Organization { org } => format!("orgs/{org}"),
+        }
+    }
+}
+
+impl fmt::Display for RunnerScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.to_display())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct GitHubClient {
@@ -132,11 +286,17 @@ impl GitHubClient {
         Ok(all_repos)
     }
 
-    pub async fn get_registration_token(&self, repo: &str) -> Result<RegistrationToken> {
+    pub async fn get_registration_token(&self, scope: &RunnerScope) -> Result<RegistrationToken> {
+        let api_path = scope.api_path();
+        let scope_type = match scope {
+            RunnerScope::Repository { .. } => "repo",
+            RunnerScope::Organization { .. } => "org admin:org",
+        };
+
         let resp = self
             .client
             .post(format!(
-                "https://api.github.com/repos/{repo}/actions/runners/registration-token"
+                "https://api.github.com/{api_path}/actions/runners/registration-token"
             ))
             .header("Authorization", format!("token {}", self.token))
             .header("Accept", "application/vnd.github+json")
@@ -147,8 +307,10 @@ impl GitHubClient {
 
         if !resp.status().is_success() {
             anyhow::bail!(
-                "Failed to get registration token ({}). Check repo exists and PAT has 'repo' scope.",
-                resp.status()
+                "Failed to get registration token ({}). Check {} exists and PAT has '{}' scope.",
+                resp.status(),
+                scope,
+                scope_type
             );
         }
 
@@ -157,11 +319,12 @@ impl GitHubClient {
             .context("Failed to parse registration token")
     }
 
-    pub async fn get_remove_token(&self, repo: &str) -> Result<RegistrationToken> {
+    pub async fn get_remove_token(&self, scope: &RunnerScope) -> Result<RegistrationToken> {
+        let api_path = scope.api_path();
         let resp = self
             .client
             .post(format!(
-                "https://api.github.com/repos/{repo}/actions/runners/remove-token"
+                "https://api.github.com/{api_path}/actions/runners/remove-token"
             ))
             .header("Authorization", format!("token {}", self.token))
             .header("Accept", "application/vnd.github+json")
@@ -176,11 +339,12 @@ impl GitHubClient {
         resp.json().await.context("Failed to parse remove token")
     }
 
-    pub async fn list_runners(&self, repo: &str) -> Result<RunnerList> {
+    pub async fn list_runners(&self, scope: &RunnerScope) -> Result<RunnerList> {
+        let api_path = scope.api_path();
         let resp = self
             .client
             .get(format!(
-                "https://api.github.com/repos/{repo}/actions/runners"
+                "https://api.github.com/{api_path}/actions/runners"
             ))
             .header("Authorization", format!("token {}", self.token))
             .header("Accept", "application/vnd.github+json")
@@ -195,10 +359,18 @@ impl GitHubClient {
         resp.json().await.context("Failed to parse runners list")
     }
 
-    pub async fn list_workflow_runs(&self, repo: &str, count: u32) -> Result<WorkflowRunList> {
+    /// List workflow runs for a repository (not supported for organizations)
+    pub async fn list_workflow_runs(
+        &self,
+        owner: &str,
+        repo: &str,
+        count: u32,
+    ) -> Result<WorkflowRunList> {
         let resp = self
             .client
-            .get(format!("https://api.github.com/repos/{repo}/actions/runs"))
+            .get(format!(
+                "https://api.github.com/repos/{owner}/{repo}/actions/runs"
+            ))
             .query(&[("per_page", &count.to_string())])
             .header("Authorization", format!("token {}", self.token))
             .header("Accept", "application/vnd.github+json")

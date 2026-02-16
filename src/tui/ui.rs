@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use super::{App, Panel};
+use crate::github::RunnerScope;
 use crate::runner::RunnerStatus;
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -84,7 +85,7 @@ fn draw_runners_panel(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::Gray)
     };
 
-    let header_cells = ["Repository", "Local", "GitHub", "Busy"].iter().map(|h| {
+    let header_cells = ["Target", "Local", "GitHub", "Busy"].iter().map(|h| {
         Cell::from(*h).style(
             Style::default()
                 .fg(Color::Yellow)
@@ -104,7 +105,7 @@ fn draw_runners_panel(f: &mut Frame, app: &App, area: Rect) {
             let gh_runner = app
                 .github_runners
                 .iter()
-                .find(|(repo, _)| repo == &instance.repo)
+                .find(|(scope, _)| scope == &instance.scope)
                 .and_then(|(_, runners)| runners.first());
 
             let (gh_status, busy) = if let Some(r) = gh_runner {
@@ -129,12 +130,8 @@ fn draw_runners_panel(f: &mut Frame, app: &App, area: Rect) {
                 )
             };
 
-            // Shorten repo name if needed
-            let repo_display = if instance.repo.len() > 30 {
-                format!("...{}", &instance.repo[instance.repo.len() - 27..])
-            } else {
-                instance.repo.clone()
-            };
+            // Format scope display with [org] prefix for organizations
+            let scope_display = format_scope_display(&instance.scope, 30);
 
             let style = if is_active && i == app.selected_runner {
                 Style::default()
@@ -145,7 +142,7 @@ fn draw_runners_panel(f: &mut Frame, app: &App, area: Rect) {
             };
 
             Row::new(vec![
-                Cell::from(repo_display),
+                Cell::from(scope_display),
                 Cell::from(local_status),
                 Cell::from(gh_status),
                 Cell::from(busy),
@@ -183,6 +180,29 @@ fn draw_runners_panel(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(table, area);
 }
 
+/// Format a scope for display in the TUI, with [org] prefix for organizations
+fn format_scope_display(scope: &RunnerScope, max_len: usize) -> String {
+    match scope {
+        RunnerScope::Organization { org } => {
+            let prefix = "[org] ";
+            let available = max_len.saturating_sub(prefix.len());
+            if org.len() > available {
+                format!("{}...{}", prefix, &org[org.len().saturating_sub(available - 3)..])
+            } else {
+                format!("{prefix}{org}")
+            }
+        }
+        RunnerScope::Repository { owner, repo } => {
+            let full = format!("{owner}/{repo}");
+            if full.len() > max_len {
+                format!("...{}", &full[full.len().saturating_sub(max_len - 3)..])
+            } else {
+                full
+            }
+        }
+    }
+}
+
 fn draw_workflows_panel(f: &mut Frame, app: &App, area: Rect) {
     let is_active = app.active_panel == Panel::Workflows;
     let border_style = if is_active {
@@ -203,10 +223,14 @@ fn draw_workflows_panel(f: &mut Frame, app: &App, area: Rect) {
     let mut rows: Vec<Row> = Vec::new();
     let mut flat_index = 0usize;
 
-    for (repo, runs) in &app.workflow_runs {
-        for run in runs {
-            let short_repo = repo.split('/').next_back().unwrap_or(repo);
+    for (scope, runs) in &app.workflow_runs {
+        // Only show workflow runs for repositories
+        let short_name = match scope {
+            RunnerScope::Repository { repo, .. } => repo.clone(),
+            RunnerScope::Organization { .. } => continue, // Skip orgs
+        };
 
+        for run in runs {
             let workflow_name = run.name.as_deref().unwrap_or("unknown");
             let branch = run.head_branch.as_deref().unwrap_or("-");
 
@@ -222,7 +246,7 @@ fn draw_workflows_panel(f: &mut Frame, app: &App, area: Rect) {
 
             rows.push(
                 Row::new(vec![
-                    Cell::from(short_repo.to_string()),
+                    Cell::from(truncate(&short_name, 15)),
                     Cell::from(truncate(workflow_name, 20)),
                     Cell::from(status_span),
                     Cell::from(truncate(branch, 15)),
