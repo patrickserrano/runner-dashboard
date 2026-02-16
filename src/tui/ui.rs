@@ -269,8 +269,10 @@ fn draw_logs_panel(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::DarkGray),
         ))]
     } else {
-        app.log_messages[start..end]
+        app.log_messages
             .iter()
+            .skip(start)
+            .take(end - start)
             .map(|msg| {
                 let style = if msg.contains("stdout:") {
                     Style::default().fg(Color::Green)

@@ -3,14 +3,14 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::SyncSender;
 use std::sync::Mutex;
 
 use crate::config::Config;
 use crate::github::GitHubClient;
 
 static VERBOSE: AtomicBool = AtomicBool::new(false);
-static LOG_SENDER: Mutex<Option<Sender<String>>> = Mutex::new(None);
+static LOG_SENDER: Mutex<Option<SyncSender<String>>> = Mutex::new(None);
 
 /// Enable verbose mode for command execution
 pub fn set_verbose(enabled: bool) {
@@ -22,7 +22,7 @@ fn is_verbose() -> bool {
 }
 
 /// Set a channel sender for capturing verbose logs (used by TUI)
-pub fn set_log_sender(sender: Option<Sender<String>>) {
+pub fn set_log_sender(sender: Option<SyncSender<String>>) {
     if let Ok(mut guard) = LOG_SENDER.lock() {
         *guard = sender;
     }
@@ -33,7 +33,8 @@ fn verbose_log(msg: &str) {
     eprintln!("{msg}");
     if let Ok(guard) = LOG_SENDER.lock() {
         if let Some(sender) = guard.as_ref() {
-            let _ = sender.send(msg.to_string());
+            // Use try_send to avoid blocking if channel is full (drops message instead)
+            let _ = sender.try_send(msg.to_string());
         }
     }
 }
