@@ -3,11 +3,14 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
+use std::sync::Mutex;
 
 use crate::config::Config;
 use crate::github::GitHubClient;
 
 static VERBOSE: AtomicBool = AtomicBool::new(false);
+static LOG_SENDER: Mutex<Option<Sender<String>>> = Mutex::new(None);
 
 /// Enable verbose mode for command execution
 pub fn set_verbose(enabled: bool) {
@@ -16,6 +19,23 @@ pub fn set_verbose(enabled: bool) {
 
 fn is_verbose() -> bool {
     VERBOSE.load(Ordering::SeqCst)
+}
+
+/// Set a channel sender for capturing verbose logs (used by TUI)
+pub fn set_log_sender(sender: Option<Sender<String>>) {
+    if let Ok(mut guard) = LOG_SENDER.lock() {
+        *guard = sender;
+    }
+}
+
+/// Log a verbose message - sends to both stderr and optional channel
+fn verbose_log(msg: &str) {
+    eprintln!("{msg}");
+    if let Ok(guard) = LOG_SENDER.lock() {
+        if let Some(sender) = guard.as_ref() {
+            let _ = sender.send(msg.to_string());
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -510,7 +530,11 @@ pub fn get_runner_logs(config: &Config, repo: &str, lines: u32) -> Result<String
 
 fn run_cmd(program: &str, args: &[&str]) -> Result<()> {
     if is_verbose() {
-        eprintln!("[verbose] Running: {} {}", program, args.join(" "));
+        verbose_log(&format!(
+            "[verbose] Running: {} {}",
+            program,
+            args.join(" ")
+        ));
     }
 
     let output = Command::new(program)
@@ -520,18 +544,18 @@ fn run_cmd(program: &str, args: &[&str]) -> Result<()> {
 
     if is_verbose() {
         if !output.stdout.is_empty() {
-            eprintln!(
+            verbose_log(&format!(
                 "[verbose] stdout: {}",
                 String::from_utf8_lossy(&output.stdout)
-            );
+            ));
         }
         if !output.stderr.is_empty() {
-            eprintln!(
+            verbose_log(&format!(
                 "[verbose] stderr: {}",
                 String::from_utf8_lossy(&output.stderr)
-            );
+            ));
         }
-        eprintln!("[verbose] exit code: {:?}", output.status.code());
+        verbose_log(&format!("[verbose] exit code: {:?}", output.status.code()));
     }
 
     if !output.status.success() {
@@ -549,12 +573,12 @@ fn run_cmd(program: &str, args: &[&str]) -> Result<()> {
 
 fn run_cmd_in_dir(dir: &Path, program: &str, args: &[&str]) -> Result<()> {
     if is_verbose() {
-        eprintln!(
+        verbose_log(&format!(
             "[verbose] Running in {}: {} {}",
             dir.display(),
             program,
             args.join(" ")
-        );
+        ));
     }
 
     let output = Command::new(program)
@@ -565,18 +589,18 @@ fn run_cmd_in_dir(dir: &Path, program: &str, args: &[&str]) -> Result<()> {
 
     if is_verbose() {
         if !output.stdout.is_empty() {
-            eprintln!(
+            verbose_log(&format!(
                 "[verbose] stdout: {}",
                 String::from_utf8_lossy(&output.stdout)
-            );
+            ));
         }
         if !output.stderr.is_empty() {
-            eprintln!(
+            verbose_log(&format!(
                 "[verbose] stderr: {}",
                 String::from_utf8_lossy(&output.stderr)
-            );
+            ));
         }
-        eprintln!("[verbose] exit code: {:?}", output.status.code());
+        verbose_log(&format!("[verbose] exit code: {:?}", output.status.code()));
     }
 
     if !output.status.success() {

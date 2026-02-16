@@ -10,18 +10,36 @@ use super::{App, Panel};
 use crate::runner::RunnerStatus;
 
 pub fn draw(f: &mut Frame, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // header
-            Constraint::Min(0),    // main content
-            Constraint::Length(3), // status bar
-        ])
-        .split(f.area());
+    let chunks = if app.show_logs {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),  // header
+                Constraint::Min(10),    // main content (reduced)
+                Constraint::Length(12), // logs panel
+                Constraint::Length(3),  // status bar
+            ])
+            .split(f.area())
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // header
+                Constraint::Min(0),    // main content
+                Constraint::Length(3), // status bar
+            ])
+            .split(f.area())
+    };
 
     draw_header(f, app, chunks[0]);
     draw_main(f, app, chunks[1]);
-    draw_status_bar(f, app, chunks[2]);
+
+    if app.show_logs {
+        draw_logs_panel(f, app, chunks[2]);
+        draw_status_bar(f, app, chunks[3]);
+    } else {
+        draw_status_bar(f, app, chunks[2]);
+    }
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
@@ -237,6 +255,51 @@ fn draw_workflows_panel(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(table, area);
 }
 
+fn draw_logs_panel(f: &mut Frame, app: &App, area: Rect) {
+    let log_count = app.log_messages.len();
+    let visible_lines = (area.height.saturating_sub(2)) as usize; // account for borders
+
+    // Get the visible slice of logs
+    let start = app.log_scroll.min(log_count.saturating_sub(1));
+    let end = (start + visible_lines).min(log_count);
+
+    let log_lines: Vec<Line> = if log_count == 0 {
+        vec![Line::from(Span::styled(
+            "No verbose logs yet. Start/stop runners to see output.",
+            Style::default().fg(Color::DarkGray),
+        ))]
+    } else {
+        app.log_messages[start..end]
+            .iter()
+            .map(|msg| {
+                let style = if msg.contains("stdout:") {
+                    Style::default().fg(Color::Green)
+                } else if msg.contains("stderr:") {
+                    Style::default().fg(Color::Yellow)
+                } else if msg.contains("exit code:") {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                Line::from(Span::styled(msg.clone(), style))
+            })
+            .collect()
+    };
+
+    let logs_widget = Paragraph::new(log_lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Magenta))
+            .title(format!(
+                " Verbose Logs ({}/{}) [PgUp/PgDn scroll, c clear] ",
+                if log_count > 0 { start + 1 } else { 0 },
+                log_count
+            )),
+    );
+
+    f.render_widget(logs_widget, area);
+}
+
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -274,19 +337,26 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         ),
         Span::raw(" refresh  "),
         Span::styled(
+            "v",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" logs  "),
+        Span::styled(
             "S",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(" start all  "),
+        Span::raw(" all  "),
         Span::styled(
             "X",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(" stop all"),
+        Span::raw(" stop"),
     ]);
 
     let help_widget =

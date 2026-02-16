@@ -8,11 +8,14 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
+use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 use crate::config::Config;
 use crate::github::{GitHubClient, Runner, WorkflowRun};
 use crate::runner::{self, RunnerInstance};
+
+const MAX_LOG_LINES: usize = 100;
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -36,6 +39,10 @@ pub struct App {
     pub loading: bool,
     pub should_quit: bool,
     pub error: Option<String>,
+    pub show_logs: bool,
+    pub log_messages: Vec<String>,
+    pub log_receiver: Option<Receiver<String>>,
+    pub log_scroll: usize,
 }
 
 impl App {
@@ -55,6 +62,23 @@ impl App {
             loading: false,
             should_quit: false,
             error: None,
+            show_logs: false,
+            log_messages: Vec::new(),
+            log_receiver: None,
+            log_scroll: 0,
+        }
+    }
+
+    /// Drain any pending log messages from the receiver
+    fn drain_logs(&mut self) {
+        if let Some(ref receiver) = self.log_receiver {
+            while let Ok(msg) = receiver.try_recv() {
+                self.log_messages.push(msg);
+                // Keep only the last MAX_LOG_LINES
+                if self.log_messages.len() > MAX_LOG_LINES {
+                    self.log_messages.remove(0);
+                }
+            }
         }
     }
 
@@ -105,6 +129,7 @@ impl App {
         self.status_message = Some((msg, Instant::now()));
     }
 
+    #[allow(clippy::too_many_lines)]
     fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         // Clear expired status messages
         if let Some((_, time)) = &self.status_message {
@@ -201,12 +226,42 @@ impl App {
                 self.set_status("Stopped all runners".to_string());
                 self.instances = runner::list_instances(&self.config);
             }
+            KeyCode::Char('v') => {
+                // Toggle verbose log panel
+                self.show_logs = !self.show_logs;
+                if self.show_logs {
+                    self.set_status("Logs panel shown (verbose mode)".to_string());
+                } else {
+                    self.set_status("Logs panel hidden".to_string());
+                }
+            }
+            KeyCode::Char('c') => {
+                // Clear logs
+                if self.show_logs {
+                    self.log_messages.clear();
+                    self.log_scroll = 0;
+                    self.set_status("Logs cleared".to_string());
+                }
+            }
+            KeyCode::PageUp => {
+                // Scroll logs up
+                if self.show_logs && self.log_scroll > 0 {
+                    self.log_scroll = self.log_scroll.saturating_sub(5);
+                }
+            }
+            KeyCode::PageDown => {
+                // Scroll logs down
+                if self.show_logs {
+                    let max_scroll = self.log_messages.len().saturating_sub(1);
+                    self.log_scroll = (self.log_scroll + 5).min(max_scroll);
+                }
+            }
             _ => {}
         }
     }
 }
 
-pub async fn run_dashboard(config: Config) -> Result<()> {
+pub async fn run_dashboard(config: Config, verbose: bool) -> Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -216,7 +271,18 @@ pub async fn run_dashboard(config: Config) -> Result<()> {
 
     let mut app = App::new(config);
 
+    // Set up log channel for verbose output
+    if verbose {
+        let (sender, receiver) = mpsc::channel();
+        runner::set_log_sender(Some(sender));
+        app.log_receiver = Some(receiver);
+        app.show_logs = true; // Auto-show logs panel when verbose
+    }
+
     let result = run_app(&mut terminal, &mut app).await;
+
+    // Clean up log sender
+    runner::set_log_sender(None);
 
     // Restore terminal
     disable_raw_mode()?;
@@ -235,6 +301,9 @@ async fn run_app(
         if app.last_refresh.elapsed() >= REFRESH_INTERVAL {
             app.refresh_data().await;
         }
+
+        // Drain any pending log messages
+        app.drain_logs();
 
         terminal.draw(|f| ui::draw(f, app))?;
 
