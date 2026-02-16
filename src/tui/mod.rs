@@ -7,6 +7,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
+use std::collections::VecDeque;
 use std::io;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
@@ -40,7 +41,7 @@ pub struct App {
     pub should_quit: bool,
     pub error: Option<String>,
     pub show_logs: bool,
-    pub log_messages: Vec<String>,
+    pub log_messages: VecDeque<String>,
     pub log_receiver: Option<Receiver<String>>,
     pub log_scroll: usize,
 }
@@ -63,7 +64,7 @@ impl App {
             should_quit: false,
             error: None,
             show_logs: false,
-            log_messages: Vec::new(),
+            log_messages: VecDeque::new(),
             log_receiver: None,
             log_scroll: 0,
         }
@@ -73,10 +74,10 @@ impl App {
     fn drain_logs(&mut self) {
         if let Some(ref receiver) = self.log_receiver {
             while let Ok(msg) = receiver.try_recv() {
-                self.log_messages.push(msg);
-                // Keep only the last MAX_LOG_LINES
+                self.log_messages.push_back(msg);
+                // Keep only the last MAX_LOG_LINES (O(1) with VecDeque)
                 if self.log_messages.len() > MAX_LOG_LINES {
-                    self.log_messages.remove(0);
+                    self.log_messages.pop_front();
                 }
             }
         }
@@ -271,9 +272,9 @@ pub async fn run_dashboard(config: Config, verbose: bool) -> Result<()> {
 
     let mut app = App::new(config);
 
-    // Set up log channel for verbose output
+    // Set up log channel for verbose output (bounded to prevent memory leaks)
     if verbose {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::sync_channel(MAX_LOG_LINES);
         runner::set_log_sender(Some(sender));
         app.log_receiver = Some(receiver);
         app.show_logs = true; // Auto-show logs panel when verbose
