@@ -114,7 +114,7 @@ async fn main() {
         Commands::Status => cmd_status(),
         Commands::Logs { repo, lines } => cmd_logs(&repo, lines),
         Commands::Update => cmd_update().await,
-        Commands::Dashboard => cmd_dashboard().await,
+        Commands::Dashboard => cmd_dashboard(cli.verbose).await,
         Commands::Import { path, repo } => cmd_import(&path, repo.as_deref()),
     };
 
@@ -488,9 +488,9 @@ async fn cmd_update() -> Result<()> {
     Ok(())
 }
 
-async fn cmd_dashboard() -> Result<()> {
+async fn cmd_dashboard(verbose: bool) -> Result<()> {
     let config = Config::load()?;
-    tui::run_dashboard(config).await
+    tui::run_dashboard(config, verbose).await
 }
 
 fn cmd_import(path: &str, repo: Option<&str>) -> Result<()> {
