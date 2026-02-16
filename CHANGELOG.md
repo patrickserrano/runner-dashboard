@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-02-16
+
+### Features
+
+- **Organization runner support** — manage runners at organization level (`org:orgname`) in addition to repositories (`owner/repo`)
+- **Auto-scan command** — discover existing runner installations with `runner-mgr scan`
+  - Scans `~/actions-runner*`, `~/runners/*`, `/opt/*runner*`, `/home/*/actions-runner*`
+  - Use `--paths` to scan additional directories
+  - Use `--auto-import` to import all discovered runners automatically
+- **Improved TUI** — organization runners show `[org]` prefix in dashboard
+
+### Changed
+
+- CLI commands now use `target` instead of `repo` to support both repository and organization scopes
+- `import` command now uses `--target` instead of `--repo` for scope override
+- Directory naming: organizations use `org__<orgname>` format
+
+### Documentation
+
+- Updated README with organization runner examples and scan command usage
+
 ## [0.2.6] - 2026-02-16
 
 ### Bug Fixes

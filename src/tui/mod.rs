@@ -13,7 +13,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 use crate::config::Config;
-use crate::github::{GitHubClient, Runner, WorkflowRun};
+use crate::github::{GitHubClient, Runner, RunnerScope, WorkflowRun};
 use crate::runner::{self, RunnerInstance};
 
 const MAX_LOG_LINES: usize = 100;
@@ -30,8 +30,8 @@ pub struct App {
     pub config: Config,
     pub client: GitHubClient,
     pub instances: Vec<RunnerInstance>,
-    pub github_runners: Vec<(String, Vec<Runner>)>,
-    pub workflow_runs: Vec<(String, Vec<WorkflowRun>)>,
+    pub github_runners: Vec<(RunnerScope, Vec<Runner>)>,
+    pub workflow_runs: Vec<(RunnerScope, Vec<WorkflowRun>)>,
     pub selected_runner: usize,
     pub selected_workflow: usize,
     pub active_panel: Panel,
@@ -90,28 +90,31 @@ impl App {
         // Refresh local instances
         self.instances = runner::list_instances(&self.config);
 
-        // Collect repo names upfront to avoid borrow conflicts
-        let repos: Vec<String> = self.instances.iter().map(|i| i.repo.clone()).collect();
+        // Collect scopes upfront to avoid borrow conflicts
+        let scopes: Vec<RunnerScope> = self.instances.iter().map(|i| i.scope.clone()).collect();
 
-        // Refresh GitHub runner status and workflow runs for each configured repo
+        // Refresh GitHub runner status and workflow runs for each configured scope
         let mut github_runners = Vec::new();
         let mut workflow_runs = Vec::new();
         let mut last_error: Option<String> = None;
 
-        for repo in &repos {
-            match self.client.list_runners(repo).await {
-                Ok(list) => github_runners.push((repo.clone(), list.runners)),
+        for scope in &scopes {
+            match self.client.list_runners(scope).await {
+                Ok(list) => github_runners.push((scope.clone(), list.runners)),
                 Err(e) => {
-                    github_runners.push((repo.clone(), Vec::new()));
-                    last_error = Some(format!("Error fetching runners for {repo}: {e}"));
+                    github_runners.push((scope.clone(), Vec::new()));
+                    last_error = Some(format!("Error fetching runners for {scope}: {e}"));
                 }
             }
 
-            match self.client.list_workflow_runs(repo, 5).await {
-                Ok(list) => workflow_runs.push((repo.clone(), list.workflow_runs)),
-                Err(e) => {
-                    workflow_runs.push((repo.clone(), Vec::new()));
-                    last_error = Some(format!("Error fetching runs for {repo}: {e}"));
+            // Only fetch workflow runs for repositories, not organizations
+            if let RunnerScope::Repository { owner, repo } = scope {
+                match self.client.list_workflow_runs(owner, repo, 5).await {
+                    Ok(list) => workflow_runs.push((scope.clone(), list.workflow_runs)),
+                    Err(e) => {
+                        workflow_runs.push((scope.clone(), Vec::new()));
+                        last_error = Some(format!("Error fetching runs for {scope}: {e}"));
+                    }
                 }
             }
         }
@@ -183,27 +186,27 @@ impl App {
             },
             KeyCode::Char('s') => {
                 if self.active_panel == Panel::Runners && !self.instances.is_empty() {
-                    let repo = self.instances[self.selected_runner].repo.clone();
+                    let scope = self.instances[self.selected_runner].scope.clone();
                     let status = &self.instances[self.selected_runner].status;
                     match status {
                         runner::RunnerStatus::Running => {
-                            match runner::stop_runner(&self.config, &repo) {
-                                Ok(()) => self.set_status(format!("Stopped {repo}")),
+                            match runner::stop_runner(&self.config, &scope) {
+                                Ok(()) => self.set_status(format!("Stopped {scope}")),
                                 Err(e) => {
-                                    self.set_status(format!("Error stopping {repo}: {e}"));
+                                    self.set_status(format!("Error stopping {scope}: {e}"));
                                 }
                             }
                         }
                         runner::RunnerStatus::Stopped => {
-                            match runner::start_runner(&self.config, &repo) {
-                                Ok(()) => self.set_status(format!("Started {repo}")),
+                            match runner::start_runner(&self.config, &scope) {
+                                Ok(()) => self.set_status(format!("Started {scope}")),
                                 Err(e) => {
-                                    self.set_status(format!("Error starting {repo}: {e}"));
+                                    self.set_status(format!("Error starting {scope}: {e}"));
                                 }
                             }
                         }
                         _ => {
-                            self.set_status(format!("Cannot toggle {repo} (status: {status})"));
+                            self.set_status(format!("Cannot toggle {scope} (status: {status})"));
                         }
                     }
                     // Refresh local status immediately

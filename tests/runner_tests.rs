@@ -1,3 +1,4 @@
+use runner_mgr::github::RunnerScope;
 use serial_test::serial;
 use tempfile::TempDir;
 
@@ -26,31 +27,7 @@ fn test_list_instances_with_dirs() {
     let instances_dir = tmp.path().join("instances");
     std::fs::create_dir_all(instances_dir.join("owner__repo1")).unwrap();
     std::fs::create_dir_all(instances_dir.join("owner__repo2")).unwrap();
-
-    let config = runner_mgr::config::Config {
-        github_pat: "ghp_test".to_string(),
-        github_user: "user".to_string(),
-        runner_user: "github".to_string(),
-        runner_os: "linux".to_string(),
-        runner_arch: "x64".to_string(),
-        instances_base: tmp.path().to_str().unwrap().to_string(),
-    };
-
-    let instances = runner_mgr::runner::list_instances(&config);
-    assert_eq!(instances.len(), 2);
-
-    let repos: Vec<&str> = instances.iter().map(|i| i.repo.as_str()).collect();
-    assert!(repos.contains(&"owner/repo1"));
-    assert!(repos.contains(&"owner/repo2"));
-}
-
-#[test]
-fn test_list_instances_sorted() {
-    let tmp = TempDir::new().unwrap();
-    let instances_dir = tmp.path().join("instances");
-    std::fs::create_dir_all(instances_dir.join("zzz__repo")).unwrap();
-    std::fs::create_dir_all(instances_dir.join("aaa__repo")).unwrap();
-    std::fs::create_dir_all(instances_dir.join("mmm__repo")).unwrap();
+    std::fs::create_dir_all(instances_dir.join("org__myorg")).unwrap();
 
     let config = runner_mgr::config::Config {
         github_pat: "ghp_test".to_string(),
@@ -63,9 +40,37 @@ fn test_list_instances_sorted() {
 
     let instances = runner_mgr::runner::list_instances(&config);
     assert_eq!(instances.len(), 3);
-    assert_eq!(instances[0].repo, "aaa/repo");
-    assert_eq!(instances[1].repo, "mmm/repo");
-    assert_eq!(instances[2].repo, "zzz/repo");
+
+    let scopes: Vec<String> = instances.iter().map(|i| i.scope.to_display()).collect();
+    assert!(scopes.contains(&"owner/repo1".to_string()));
+    assert!(scopes.contains(&"owner/repo2".to_string()));
+    assert!(scopes.contains(&"org:myorg".to_string()));
+}
+
+#[test]
+fn test_list_instances_sorted() {
+    let tmp = TempDir::new().unwrap();
+    let instances_dir = tmp.path().join("instances");
+    std::fs::create_dir_all(instances_dir.join("zzz__repo")).unwrap();
+    std::fs::create_dir_all(instances_dir.join("aaa__repo")).unwrap();
+    std::fs::create_dir_all(instances_dir.join("mmm__repo")).unwrap();
+    std::fs::create_dir_all(instances_dir.join("org__beta")).unwrap();
+
+    let config = runner_mgr::config::Config {
+        github_pat: "ghp_test".to_string(),
+        github_user: "user".to_string(),
+        runner_user: "github".to_string(),
+        runner_os: "linux".to_string(),
+        runner_arch: "x64".to_string(),
+        instances_base: tmp.path().to_str().unwrap().to_string(),
+    };
+
+    let instances = runner_mgr::runner::list_instances(&config);
+    assert_eq!(instances.len(), 4);
+    assert_eq!(instances[0].scope.to_display(), "aaa/repo");
+    assert_eq!(instances[1].scope.to_display(), "mmm/repo");
+    assert_eq!(instances[2].scope.to_display(), "org:beta");
+    assert_eq!(instances[3].scope.to_display(), "zzz/repo");
 }
 
 #[test]
@@ -107,6 +112,7 @@ fn test_instance_with_service_file() {
 
     let instances = runner_mgr::runner::list_instances(&config);
     assert_eq!(instances.len(), 1);
+    assert_eq!(instances[0].scope.to_display(), "owner/repo1");
     assert_eq!(
         instances[0].service_name.as_deref(),
         Some("actions.runner.myservice")
@@ -125,7 +131,8 @@ fn test_get_logs_nonexistent_repo() {
         instances_base: tmp.path().to_str().unwrap().to_string(),
     };
 
-    let result = runner_mgr::runner::get_runner_logs(&config, "nonexistent/repo", 50);
+    let scope = RunnerScope::parse("nonexistent/repo").unwrap();
+    let result = runner_mgr::runner::get_runner_logs(&config, &scope, 50);
     assert!(result.is_err());
     let err = format!("{:#}", result.unwrap_err());
     assert!(err.contains("No runner configured"));
@@ -178,7 +185,7 @@ fn test_parse_repo_from_runner_config_unexpected_format() {
     let result = runner_mgr::runner::parse_repo_from_runner_config(content);
     assert!(result.is_err());
     let err = format!("{:#}", result.unwrap_err());
-    assert!(err.contains("Unexpected gitHubUrl format"));
+    assert!(err.contains("Unexpected GitHub URL format"));
 }
 
 #[test]
@@ -187,6 +194,38 @@ fn test_parse_repo_from_runner_config_with_bom() {
     let content = "\u{feff}{\"gitHubUrl\": \"https://github.com/owner/repo\"}";
     let result = runner_mgr::runner::parse_repo_from_runner_config(content).unwrap();
     assert_eq!(result, "owner/repo");
+}
+
+// Tests for parse_scope_from_runner_config
+
+#[test]
+fn test_parse_scope_from_runner_config_repo() {
+    let content = r#"{"gitHubUrl": "https://github.com/myowner/myrepo"}"#;
+    let scope = runner_mgr::runner::parse_scope_from_runner_config(content).unwrap();
+    assert!(matches!(
+        scope,
+        RunnerScope::Repository { owner, repo } if owner == "myowner" && repo == "myrepo"
+    ));
+}
+
+#[test]
+fn test_parse_scope_from_runner_config_org() {
+    let content = r#"{"gitHubUrl": "https://github.com/myorg"}"#;
+    let scope = runner_mgr::runner::parse_scope_from_runner_config(content).unwrap();
+    assert!(matches!(
+        scope,
+        RunnerScope::Organization { org } if org == "myorg"
+    ));
+}
+
+#[test]
+fn test_parse_scope_from_runner_config_org_trailing_slash() {
+    let content = r#"{"gitHubUrl": "https://github.com/myorg/"}"#;
+    let scope = runner_mgr::runner::parse_scope_from_runner_config(content).unwrap();
+    assert!(matches!(
+        scope,
+        RunnerScope::Organization { org } if org == "myorg"
+    ));
 }
 
 #[test]

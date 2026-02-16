@@ -1,3 +1,4 @@
+use runner_mgr::github::RunnerScope;
 use serial_test::serial;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -100,7 +101,8 @@ fn test_instance_dir_path() {
         instances_base: "/opt/github-runners".to_string(),
     };
 
-    let dir = config.instance_dir("myuser/myrepo");
+    let scope = RunnerScope::parse("myuser/myrepo").unwrap();
+    let dir = config.instance_dir(&scope);
     assert_eq!(
         dir.to_str().unwrap(),
         "/opt/github-runners/instances/myuser__myrepo"
