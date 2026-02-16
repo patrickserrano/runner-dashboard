@@ -187,7 +187,11 @@ fn format_scope_display(scope: &RunnerScope, max_len: usize) -> String {
             let prefix = "[org] ";
             let available = max_len.saturating_sub(prefix.len());
             if org.len() > available {
-                format!("{}...{}", prefix, &org[org.len().saturating_sub(available - 3)..])
+                format!(
+                    "{}...{}",
+                    prefix,
+                    &org[org.len().saturating_sub(available - 3)..]
+                )
             } else {
                 format!("{prefix}{org}")
             }

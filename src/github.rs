@@ -343,9 +343,7 @@ impl GitHubClient {
         let api_path = scope.api_path();
         let resp = self
             .client
-            .get(format!(
-                "https://api.github.com/{api_path}/actions/runners"
-            ))
+            .get(format!("https://api.github.com/{api_path}/actions/runners"))
             .header("Authorization", format!("token {}", self.token))
             .header("Accept", "application/vnd.github+json")
             .header("User-Agent", "runner-mgr")

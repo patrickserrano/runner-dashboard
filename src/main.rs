@@ -535,8 +535,7 @@ fn cmd_scan(extra_paths: Option<&str>, auto_import: bool) -> Result<()> {
 
     // Get already managed runners
     let managed = runner::list_instances(&config);
-    let managed_scopes: std::collections::HashSet<_> =
-        managed.iter().map(|i| &i.scope).collect();
+    let managed_scopes: std::collections::HashSet<_> = managed.iter().map(|i| &i.scope).collect();
 
     // Filter out already managed runners
     let unmanaged: Vec<_> = discovered
@@ -576,9 +575,11 @@ fn cmd_scan(extra_paths: Option<&str>, auto_import: bool) -> Result<()> {
         for runner in &unmanaged {
             let scope_str = runner.scope.to_display();
             println!();
-            if let Err(e) =
-                runner::import_runner(&config, runner.path.to_str().unwrap_or(""), Some(&scope_str))
-            {
+            if let Err(e) = runner::import_runner(
+                &config,
+                runner.path.to_str().unwrap_or(""),
+                Some(&scope_str),
+            ) {
                 eprintln!("  Failed to import {}: {e}", runner.scope);
             }
         }
