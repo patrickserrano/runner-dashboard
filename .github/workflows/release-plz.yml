@@ -69,3 +69,11 @@ jobs:
           command: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trigger release binaries workflow
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          echo "Dispatching release workflow for v$VERSION"
+          gh workflow run release.yml -f tag="v$VERSION"
