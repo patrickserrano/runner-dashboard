@@ -6,6 +6,44 @@ use std::path::PathBuf;
 
 use crate::github::RunnerScope;
 
+/// Configuration for the scan command - specifies additional paths to search for runners
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ScanConfig {
+    /// Additional paths to scan for runner directories
+    #[serde(default)]
+    pub paths: Vec<String>,
+}
+
+impl ScanConfig {
+    pub fn config_file() -> PathBuf {
+        Config::config_dir().join("scan.toml")
+    }
+
+    /// Load scan config from file, returning default if file doesn't exist
+    pub fn load() -> Self {
+        let path = Self::config_file();
+        if !path.exists() {
+            return Self::default();
+        }
+
+        fs::read_to_string(&path)
+            .ok()
+            .and_then(|content| toml::from_str(&content).ok())
+            .unwrap_or_default()
+    }
+
+    /// Save scan config to file
+    pub fn save(&self) -> Result<()> {
+        let dir = Config::config_dir();
+        fs::create_dir_all(&dir)?;
+
+        let path = Self::config_file();
+        let content = toml::to_string_pretty(self)?;
+        fs::write(&path, &content)?;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub github_pat: String,

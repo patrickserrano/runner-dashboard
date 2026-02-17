@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::Mutex;
 
-use crate::config::Config;
+use crate::config::{Config, ScanConfig};
 use crate::github::{GitHubClient, RunnerScope};
 
 static VERBOSE: AtomicBool = AtomicBool::new(false);
@@ -913,6 +913,12 @@ pub fn scan_for_runners(extra_paths: Option<&str>) -> Vec<DiscoveredRunner> {
                 }
             }
         }
+
+        // ~/Developer/** - recursively scan Developer directory
+        let developer_dir = home.join("Developer");
+        if developer_dir.is_dir() {
+            scan_directory_recursive(&developer_dir, &mut paths_to_scan, 3);
+        }
     }
 
     // /opt/*runner*
@@ -941,27 +947,16 @@ pub fn scan_for_runners(extra_paths: Option<&str>) -> Vec<DiscoveredRunner> {
         }
     }
 
-    // Add user-specified extra paths
+    // Load paths from scan config file (~/.config/runner-mgr/scan.toml)
+    let scan_config = ScanConfig::load();
+    for path_str in &scan_config.paths {
+        add_path_to_scan(path_str, &mut paths_to_scan);
+    }
+
+    // Add user-specified extra paths from CLI
     if let Some(extra) = extra_paths {
         for path_str in extra.split(',') {
-            let path_str = path_str.trim();
-            if path_str.is_empty() {
-                continue;
-            }
-
-            let path = if let Some(stripped) = path_str.strip_prefix("~/") {
-                if let Some(home) = dirs::home_dir() {
-                    home.join(stripped)
-                } else {
-                    PathBuf::from(path_str)
-                }
-            } else {
-                PathBuf::from(path_str)
-            };
-
-            if path.is_dir() {
-                paths_to_scan.push(path);
-            }
+            add_path_to_scan(path_str.trim(), &mut paths_to_scan);
         }
     }
 
@@ -987,6 +982,83 @@ pub fn scan_for_runners(extra_paths: Option<&str>) -> Vec<DiscoveredRunner> {
     discovered.sort_by(|a, b| a.path.cmp(&b.path));
 
     discovered
+}
+
+/// Recursively scan a directory for subdirectories that might contain runners.
+/// `max_depth` limits how deep we recurse to avoid scanning too much.
+fn scan_directory_recursive(dir: &Path, paths: &mut Vec<PathBuf>, max_depth: u32) {
+    if max_depth == 0 {
+        return;
+    }
+
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        // Skip hidden directories and common non-runner directories
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.')
+            || name == "node_modules"
+            || name == "target"
+            || name == "build"
+            || name == "dist"
+            || name == "vendor"
+            || name == "Pods"
+        {
+            continue;
+        }
+
+        // Add this directory as a potential runner location
+        paths.push(path.clone());
+
+        // Recurse into subdirectories
+        scan_directory_recursive(&path, paths, max_depth - 1);
+    }
+}
+
+/// Helper to expand a path string and add it to the scan list
+fn add_path_to_scan(path_str: &str, paths: &mut Vec<PathBuf>) {
+    if path_str.is_empty() {
+        return;
+    }
+
+    let path = if let Some(stripped) = path_str.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            home.join(stripped)
+        } else {
+            PathBuf::from(path_str)
+        }
+    } else {
+        PathBuf::from(path_str)
+    };
+
+    if path.is_dir() {
+        // Check if path ends with ** for recursive scanning
+        if path_str.ends_with("**") {
+            let base_path = if let Some(stripped) = path_str.strip_suffix("**") {
+                let stripped = stripped.trim_end_matches('/');
+                if let Some(home_stripped) = stripped.strip_prefix("~/") {
+                    dirs::home_dir()
+                        .map_or_else(|| PathBuf::from(stripped), |h| h.join(home_stripped))
+                } else {
+                    PathBuf::from(stripped)
+                }
+            } else {
+                path.clone()
+            };
+            if base_path.is_dir() {
+                scan_directory_recursive(&base_path, paths, 5);
+            }
+        } else {
+            paths.push(path);
+        }
+    }
 }
 
 /// Validate a directory as a runner and extract its scope
