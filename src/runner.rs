@@ -923,7 +923,11 @@ pub fn scan_for_runners(extra_paths: Option<&str>) -> Vec<DiscoveredRunner> {
         // ~/Developer/** - recursively scan Developer directory
         let developer_dir = home.join("Developer");
         if developer_dir.is_dir() {
-            scan_directory_recursive(&developer_dir, &mut paths_to_scan, DEFAULT_DEVELOPER_SCAN_DEPTH);
+            scan_directory_recursive(
+                &developer_dir,
+                &mut paths_to_scan,
+                DEFAULT_DEVELOPER_SCAN_DEPTH,
+            );
         }
     }
 
