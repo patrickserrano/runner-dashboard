@@ -1,3 +1,4 @@
+mod charts;
 mod ui;
 
 use anyhow::Result;
@@ -12,9 +13,10 @@ use std::io;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
-use crate::config::Config;
-use crate::github::{GitHubClient, Runner, RunnerScope, WorkflowRun};
-use crate::runner::{self, RunnerInstance};
+use super::config::Config;
+use super::github::{GitHubClient, Runner, RunnerScope, WorkflowRun};
+use super::metrics::{MetricsDb, ScopeMetrics};
+use super::runner::{self, RunnerInstance};
 
 const MAX_LOG_LINES: usize = 100;
 
@@ -24,6 +26,7 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 pub enum Panel {
     Runners,
     Workflows,
+    Metrics,
 }
 
 pub struct App {
@@ -32,8 +35,10 @@ pub struct App {
     pub instances: Vec<RunnerInstance>,
     pub github_runners: Vec<(RunnerScope, Vec<Runner>)>,
     pub workflow_runs: Vec<(RunnerScope, Vec<WorkflowRun>)>,
+    pub scope_metrics: Vec<(RunnerScope, ScopeMetrics)>,
     pub selected_runner: usize,
     pub selected_workflow: usize,
+    pub selected_metric: usize,
     pub active_panel: Panel,
     pub last_refresh: Instant,
     pub status_message: Option<(String, Instant)>,
@@ -44,19 +49,32 @@ pub struct App {
     pub log_messages: VecDeque<String>,
     pub log_receiver: Option<Receiver<String>>,
     pub log_scroll: usize,
+    pub metrics_db: Option<MetricsDb>,
 }
 
 impl App {
     pub fn new(config: Config) -> Self {
         let client = GitHubClient::new(&config.github_pat);
+
+        // Try to open metrics DB, log error but don't fail
+        let metrics_db = match MetricsDb::open() {
+            Ok(db) => Some(db),
+            Err(e) => {
+                eprintln!("Warning: Failed to open metrics database: {e}");
+                None
+            }
+        };
+
         Self {
             config,
             client,
             instances: Vec::new(),
             github_runners: Vec::new(),
             workflow_runs: Vec::new(),
+            scope_metrics: Vec::new(),
             selected_runner: 0,
             selected_workflow: 0,
+            selected_metric: 0,
             active_panel: Panel::Runners,
             last_refresh: Instant::now().checked_sub(REFRESH_INTERVAL).unwrap(), // force initial refresh
             status_message: None,
@@ -67,6 +85,7 @@ impl App {
             log_messages: VecDeque::new(),
             log_receiver: None,
             log_scroll: 0,
+            metrics_db,
         }
     }
 
@@ -100,7 +119,13 @@ impl App {
 
         for scope in &scopes {
             match self.client.list_runners(scope).await {
-                Ok(list) => github_runners.push((scope.clone(), list.runners)),
+                Ok(list) => {
+                    // Record runner snapshots to metrics DB (non-blocking)
+                    if let Some(ref db) = self.metrics_db {
+                        let _ = db.record_runner_snapshots(scope, &list.runners);
+                    }
+                    github_runners.push((scope.clone(), list.runners));
+                }
                 Err(e) => {
                     github_runners.push((scope.clone(), Vec::new()));
                     last_error = Some(format!("Error fetching runners for {scope}: {e}"));
@@ -110,10 +135,30 @@ impl App {
             // Only fetch workflow runs for repositories, not organizations
             if let RunnerScope::Repository { owner, repo } = scope {
                 match self.client.list_workflow_runs(owner, repo, 5).await {
-                    Ok(list) => workflow_runs.push((scope.clone(), list.workflow_runs)),
+                    Ok(list) => {
+                        // Record workflow runs to metrics DB (non-blocking)
+                        if let Some(ref db) = self.metrics_db {
+                            let _ = db.record_workflow_runs(scope, &list.workflow_runs);
+                        }
+                        workflow_runs.push((scope.clone(), list.workflow_runs));
+                    }
                     Err(e) => {
                         workflow_runs.push((scope.clone(), Vec::new()));
                         last_error = Some(format!("Error fetching runs for {scope}: {e}"));
+                    }
+                }
+            }
+        }
+
+        // Compute scope metrics from DB
+        let mut scope_metrics = Vec::new();
+        if let Some(ref db) = self.metrics_db {
+            for scope in &scopes {
+                match db.get_scope_metrics(scope, 7) {
+                    Ok(metrics) => scope_metrics.push((scope.clone(), metrics)),
+                    Err(_) => {
+                        // Use default metrics on error
+                        scope_metrics.push((scope.clone(), ScopeMetrics::default()));
                     }
                 }
             }
@@ -125,6 +170,7 @@ impl App {
 
         self.github_runners = github_runners;
         self.workflow_runs = workflow_runs;
+        self.scope_metrics = scope_metrics;
         self.last_refresh = Instant::now();
         self.loading = false;
     }
@@ -150,8 +196,13 @@ impl App {
             KeyCode::Tab => {
                 self.active_panel = match self.active_panel {
                     Panel::Runners => Panel::Workflows,
-                    Panel::Workflows => Panel::Runners,
+                    Panel::Workflows => Panel::Metrics,
+                    Panel::Metrics => Panel::Runners,
                 };
+            }
+            KeyCode::Char('m') => {
+                // Quick switch to Metrics panel
+                self.active_panel = Panel::Metrics;
             }
             KeyCode::Up | KeyCode::Char('k') => match self.active_panel {
                 Panel::Runners => {
@@ -162,6 +213,11 @@ impl App {
                 Panel::Workflows => {
                     if self.selected_workflow > 0 {
                         self.selected_workflow -= 1;
+                    }
+                }
+                Panel::Metrics => {
+                    if self.selected_metric > 0 {
+                        self.selected_metric -= 1;
                     }
                 }
             },
@@ -181,6 +237,12 @@ impl App {
                         .saturating_sub(1);
                     if self.selected_workflow < max {
                         self.selected_workflow += 1;
+                    }
+                }
+                Panel::Metrics => {
+                    let max = self.scope_metrics.len().saturating_sub(1);
+                    if self.selected_metric < max {
+                        self.selected_metric += 1;
                     }
                 }
             },

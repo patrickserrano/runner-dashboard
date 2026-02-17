@@ -6,9 +6,10 @@ use ratatui::{
     Frame,
 };
 
+use super::super::github::RunnerScope;
+use super::super::metrics::Trend;
+use super::super::runner::RunnerStatus;
 use super::{App, Panel};
-use crate::github::RunnerScope;
-use crate::runner::RunnerStatus;
 
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = if app.show_logs {
@@ -44,10 +45,11 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
-    let titles = vec!["Runners", "Workflow Runs"];
+    let titles = vec!["Runners", "Workflow Runs", "Metrics"];
     let selected = match app.active_panel {
         Panel::Runners => 0,
         Panel::Workflows => 1,
+        Panel::Metrics => 2,
     };
 
     let tabs = Tabs::new(titles)
@@ -68,13 +70,17 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_main(f: &mut Frame, app: &App, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
+    if app.active_panel == Panel::Metrics {
+        draw_metrics_panel(f, app, area);
+    } else {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(area);
 
-    draw_runners_panel(f, app, chunks[0]);
-    draw_workflows_panel(f, app, chunks[1]);
+        draw_runners_panel(f, app, chunks[0]);
+        draw_workflows_panel(f, app, chunks[1]);
+    }
 }
 
 fn draw_runners_panel(f: &mut Frame, app: &App, area: Rect) {
@@ -452,6 +458,240 @@ fn workflow_status_colored(status: &str, conclusion: Option<&str>) -> Span<'stat
             let display = c.unwrap_or(s);
             Span::styled(display.to_string(), Style::default().fg(Color::DarkGray))
         }
+    }
+}
+
+fn draw_metrics_panel(f: &mut Frame, app: &App, area: Rect) {
+    let border_style = Style::default().fg(Color::Cyan);
+
+    if app.scope_metrics.is_empty() {
+        let empty_msg = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "No metrics data yet.",
+                Style::default().fg(Color::Yellow),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Metrics will appear after workflow runs are detected.",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(Span::styled(
+                "Press 'r' to refresh or wait for auto-refresh.",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ])
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style)
+                .title(" Metrics (7 days) "),
+        );
+        f.render_widget(empty_msg, area);
+        return;
+    }
+
+    // Split into left (success rates) and right (durations/uptime) panels
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
+
+    draw_success_rates(f, app, chunks[0]);
+    draw_duration_stats(f, app, chunks[1]);
+}
+
+fn draw_success_rates(f: &mut Frame, app: &App, area: Rect) {
+    use super::charts::count_with_bar;
+
+    let is_active = app.active_panel == Panel::Metrics;
+    let border_style = if is_active {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+
+    let header_cells = ["Scope", "Rate", "Runs", ""]
+        .iter()
+        .map(|h| {
+            Cell::from(*h).style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+        });
+    let header = Row::new(header_cells).height(1);
+
+    // Find max total runs for bar scaling
+    let max_runs = app
+        .scope_metrics
+        .iter()
+        .map(|(_, m)| m.total_runs)
+        .max()
+        .unwrap_or(1);
+
+    let rows: Vec<Row> = app
+        .scope_metrics
+        .iter()
+        .enumerate()
+        .map(|(i, (scope, metrics))| {
+            let scope_display = format_scope_display(scope, 20);
+            let rate = format_rate(metrics.success_rate);
+            let rate_style = rate_color(metrics.success_rate);
+
+            // Visual bar for run count
+            let runs_bar = count_with_bar(metrics.total_runs, max_runs, 8);
+
+            let trend = metrics
+                .success_trend
+                .map_or("-".to_string(), |t| t.symbol().to_string());
+            let trend_style = trend_color(metrics.success_trend);
+
+            let style = if is_active && i == app.selected_metric {
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+
+            Row::new(vec![
+                Cell::from(scope_display),
+                Cell::from(Span::styled(rate, rate_style)),
+                Cell::from(runs_bar),
+                Cell::from(Span::styled(trend, trend_style)),
+            ])
+            .style(style)
+        })
+        .collect();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Min(20),
+            Constraint::Length(12),
+            Constraint::Length(10),
+            Constraint::Length(6),
+        ],
+    )
+    .header(header)
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .title(" Success Rates (7 days) "),
+    );
+
+    f.render_widget(table, area);
+}
+
+fn draw_duration_stats(f: &mut Frame, app: &App, area: Rect) {
+    let border_style = Style::default().fg(Color::Gray);
+
+    let header_cells = ["Scope", "Avg", "Min", "Max", "Uptime"]
+        .iter()
+        .map(|h| {
+            Cell::from(*h).style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+        });
+    let header = Row::new(header_cells).height(1);
+
+    let rows: Vec<Row> = app
+        .scope_metrics
+        .iter()
+        .map(|(scope, metrics)| {
+            let scope_display = format_scope_display(scope, 20);
+            let avg = metrics
+                .avg_duration_seconds
+                .map_or("-".to_string(), format_duration);
+            let min = metrics
+                .min_duration_seconds
+                .map_or("-".to_string(), format_duration);
+            let max = metrics
+                .max_duration_seconds
+                .map_or("-".to_string(), format_duration);
+            let uptime = metrics
+                .runner_uptime
+                .map_or("-".to_string(), |u| format!("{u:.1}%"));
+            let uptime_style = metrics
+                .runner_uptime
+                .map_or(Style::default().fg(Color::DarkGray), rate_color);
+
+            Row::new(vec![
+                Cell::from(scope_display),
+                Cell::from(avg),
+                Cell::from(min),
+                Cell::from(max),
+                Cell::from(Span::styled(uptime, uptime_style)),
+            ])
+        })
+        .collect();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Min(15),
+            Constraint::Length(8),
+            Constraint::Length(8),
+            Constraint::Length(8),
+            Constraint::Length(8),
+        ],
+    )
+    .header(header)
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .title(" Job Durations & Uptime "),
+    );
+
+    f.render_widget(table, area);
+}
+
+/// Format a duration in seconds as human-readable
+fn format_duration(seconds: u32) -> String {
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3600 {
+        let mins = seconds / 60;
+        let secs = seconds % 60;
+        if secs == 0 {
+            format!("{mins}m")
+        } else {
+            format!("{mins}m {secs}s")
+        }
+    } else {
+        let hours = seconds / 3600;
+        let mins = (seconds % 3600) / 60;
+        format!("{hours}h {mins}m")
+    }
+}
+
+/// Format a percentage rate
+fn format_rate(rate: f64) -> String {
+    format!("{rate:.1}%")
+}
+
+/// Get color for a rate value
+fn rate_color(rate: f64) -> Style {
+    if rate >= 90.0 {
+        Style::default().fg(Color::Green)
+    } else if rate >= 70.0 {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::Red)
+    }
+}
+
+/// Get color for a trend
+fn trend_color(trend: Option<Trend>) -> Style {
+    match trend {
+        Some(Trend::Up) => Style::default().fg(Color::Green),
+        Some(Trend::Down) => Style::default().fg(Color::Red),
+        Some(Trend::Stable) | None => Style::default().fg(Color::DarkGray),
     }
 }
 

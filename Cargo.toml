@@ -1,6 +1,6 @@
 [package]
 name = "runner-mgr"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 description = "CLI tool for managing GitHub Actions self-hosted runners with a TUI dashboard"
 license = "MIT"
@@ -14,6 +14,8 @@ serde_json = "1"
 toml = "1"
 dirs = "6"
 anyhow = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
 ratatui = "0.30"
 crossterm = "0.29"
 hostname = "0.4"

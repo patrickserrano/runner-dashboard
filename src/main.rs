@@ -1,5 +1,6 @@
 mod config;
 mod github;
+mod metrics;
 mod runner;
 mod tui;
 
