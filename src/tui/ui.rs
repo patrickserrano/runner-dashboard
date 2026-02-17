@@ -511,15 +511,13 @@ fn draw_success_rates(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::Gray)
     };
 
-    let header_cells = ["Scope", "Rate", "Runs", ""]
-        .iter()
-        .map(|h| {
-            Cell::from(*h).style(
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )
-        });
+    let header_cells = ["Scope", "Rate", "Runs", ""].iter().map(|h| {
+        Cell::from(*h).style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+    });
     let header = Row::new(header_cells).height(1);
 
     // Find max total runs for bar scaling
@@ -588,15 +586,13 @@ fn draw_success_rates(f: &mut Frame, app: &App, area: Rect) {
 fn draw_duration_stats(f: &mut Frame, app: &App, area: Rect) {
     let border_style = Style::default().fg(Color::Gray);
 
-    let header_cells = ["Scope", "Avg", "Min", "Max", "Uptime"]
-        .iter()
-        .map(|h| {
-            Cell::from(*h).style(
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )
-        });
+    let header_cells = ["Scope", "Avg", "Min", "Max", "Uptime"].iter().map(|h| {
+        Cell::from(*h).style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+    });
     let header = Row::new(header_cells).height(1);
 
     let rows: Vec<Row> = app

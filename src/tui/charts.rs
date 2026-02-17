@@ -10,10 +10,7 @@ use ratatui::{
 };
 
 /// Create a simple bar chart for duration distribution
-pub fn duration_bar_chart<'a>(
-    buckets: &[(String, u32)],
-    title: &'a str,
-) -> BarChart<'a> {
+pub fn duration_bar_chart<'a>(buckets: &[(String, u32)], title: &'a str) -> BarChart<'a> {
     let bars: Vec<Bar> = buckets
         .iter()
         .map(|(label, count)| {
@@ -27,11 +24,7 @@ pub fn duration_bar_chart<'a>(
     let group = BarGroup::default().bars(&bars);
 
     BarChart::default()
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title),
-        )
+        .block(Block::default().borders(Borders::ALL).title(title))
         .data(group)
         .bar_width(8)
         .bar_gap(1)
@@ -40,10 +33,7 @@ pub fn duration_bar_chart<'a>(
 }
 
 /// Create a gauge for success rate or uptime
-pub fn rate_gauge(
-    rate: f64,
-    label: &str,
-) -> Gauge<'_> {
+pub fn rate_gauge(rate: f64, label: &str) -> Gauge<'_> {
     let color = if rate >= 90.0 {
         Color::Green
     } else if rate >= 70.0 {
@@ -53,11 +43,7 @@ pub fn rate_gauge(
     };
 
     Gauge::default()
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(label),
-        )
+        .block(Block::default().borders(Borders::ALL).title(label))
         .gauge_style(Style::default().fg(color))
         .percent(rate.clamp(0.0, 100.0) as u16)
         .label(format!("{rate:.1}%"))
@@ -71,7 +57,9 @@ pub fn mini_sparkline(values: &[u32], width: usize) -> String {
 
     let max_val = *values.iter().max().unwrap_or(&1);
     if max_val == 0 {
-        return symbols::bar::HALF.to_string().repeat(width.min(values.len()));
+        return symbols::bar::HALF
+            .to_string()
+            .repeat(width.min(values.len()));
     }
 
     let bars = [
@@ -104,7 +92,10 @@ pub fn count_with_bar(count: u32, max_count: u32, bar_width: usize) -> String {
     };
 
     let bar: String = std::iter::repeat_n(symbols::block::FULL, filled)
-        .chain(std::iter::repeat_n(symbols::block::ONE_EIGHTH, bar_width - filled))
+        .chain(std::iter::repeat_n(
+            symbols::block::ONE_EIGHTH,
+            bar_width - filled,
+        ))
         .collect();
 
     format!("{bar} {count:>4}")

@@ -5,6 +5,7 @@
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_sign_loss)]
 #![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::cast_precision_loss)]
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -75,6 +76,7 @@ impl MetricsDb {
             );
 
             -- Daily aggregates for fast queries
+            -- TODO: Implement daily aggregation job to populate this table for faster queries
             CREATE TABLE IF NOT EXISTS daily_metrics (
                 id INTEGER PRIMARY KEY,
                 scope_identifier TEXT NOT NULL,
@@ -100,18 +102,16 @@ impl MetricsDb {
     }
 
     /// Record workflow runs (upsert on `github_run_id` + scope)
-    pub fn record_workflow_runs(
-        &self,
-        scope: &RunnerScope,
-        runs: &[WorkflowRun],
-    ) -> Result<()> {
+    pub fn record_workflow_runs(&self, scope: &RunnerScope, runs: &[WorkflowRun]) -> Result<()> {
         let scope_id = scope.to_display();
         let now = Utc::now().timestamp();
+
+        let tx = self.conn.unchecked_transaction()?;
 
         for run in runs {
             let duration = Self::calculate_duration(&run.created_at, &run.updated_at);
 
-            self.conn.execute(
+            tx.execute(
                 r"
                 INSERT INTO workflow_runs
                     (github_run_id, scope_identifier, status, conclusion, created_at, updated_at, recorded_at, duration_seconds)
@@ -136,6 +136,7 @@ impl MetricsDb {
             )?;
         }
 
+        tx.commit()?;
         Ok(())
     }
 
@@ -148,16 +149,14 @@ impl MetricsDb {
     }
 
     /// Record runner status snapshots
-    pub fn record_runner_snapshots(
-        &self,
-        scope: &RunnerScope,
-        runners: &[Runner],
-    ) -> Result<()> {
+    pub fn record_runner_snapshots(&self, scope: &RunnerScope, runners: &[Runner]) -> Result<()> {
         let scope_id = scope.to_display();
         let now = Utc::now().timestamp();
 
+        let tx = self.conn.unchecked_transaction()?;
+
         for runner in runners {
-            self.conn.execute(
+            tx.execute(
                 r"
                 INSERT INTO runner_snapshots
                     (scope_identifier, runner_id, runner_name, status, busy, recorded_at)
@@ -174,6 +173,7 @@ impl MetricsDb {
             )?;
         }
 
+        tx.commit()?;
         Ok(())
     }
 
@@ -189,7 +189,8 @@ impl MetricsDb {
         let uptime = self.get_runner_uptime(&scope_id, cutoff)?;
 
         // Get previous period stats for trends
-        let (prev_total, prev_successful, _) = self.get_run_counts_range(&scope_id, previous_cutoff, cutoff)?;
+        let (prev_total, prev_successful, _) =
+            self.get_run_counts_range(&scope_id, previous_cutoff, cutoff)?;
         let prev_durations = self.get_duration_stats_range(&scope_id, previous_cutoff, cutoff)?;
 
         let mut metrics = ScopeMetrics {
@@ -237,9 +238,9 @@ impl MetricsDb {
 
         let (total, successful, failed) = stmt.query_row(params![scope_id, cutoff], |row| {
             Ok((
-                row.get::<_, i32>(0)? as u32,
-                row.get::<_, i32>(1)? as u32,
-                row.get::<_, i32>(2)? as u32,
+                row.get::<_, i64>(0)? as u32,
+                row.get::<_, i64>(1)? as u32,
+                row.get::<_, i64>(2)? as u32,
             ))
         })?;
 
@@ -247,7 +248,12 @@ impl MetricsDb {
     }
 
     /// Get run counts for a scope in a date range
-    fn get_run_counts_range(&self, scope_id: &str, start: i64, end: i64) -> Result<(u32, u32, u32)> {
+    fn get_run_counts_range(
+        &self,
+        scope_id: &str,
+        start: i64,
+        end: i64,
+    ) -> Result<(u32, u32, u32)> {
         let mut stmt = self.conn.prepare(
             r"
             SELECT
@@ -261,9 +267,9 @@ impl MetricsDb {
 
         let (total, successful, failed) = stmt.query_row(params![scope_id, start, end], |row| {
             Ok((
-                row.get::<_, i32>(0)? as u32,
-                row.get::<_, i32>(1)? as u32,
-                row.get::<_, i32>(2)? as u32,
+                row.get::<_, i64>(0)? as u32,
+                row.get::<_, i64>(1)? as u32,
+                row.get::<_, i64>(2)? as u32,
             ))
         })?;
 
@@ -271,7 +277,11 @@ impl MetricsDb {
     }
 
     /// Get duration statistics since cutoff
-    fn get_duration_stats(&self, scope_id: &str, cutoff: i64) -> Result<(Option<u32>, Option<u32>, Option<u32>)> {
+    fn get_duration_stats(
+        &self,
+        scope_id: &str,
+        cutoff: i64,
+    ) -> Result<(Option<u32>, Option<u32>, Option<u32>)> {
         let mut stmt = self.conn.prepare(
             r"
             SELECT
@@ -289,8 +299,8 @@ impl MetricsDb {
         let result = stmt.query_row(params![scope_id, cutoff], |row| {
             Ok((
                 row.get::<_, Option<f64>>(0)?.map(|v| v as u32),
-                row.get::<_, Option<i32>>(1)?.map(|v| v as u32),
-                row.get::<_, Option<i32>>(2)?.map(|v| v as u32),
+                row.get::<_, Option<i64>>(1)?.map(|v| v as u32),
+                row.get::<_, Option<i64>>(2)?.map(|v| v as u32),
             ))
         })?;
 
@@ -298,7 +308,12 @@ impl MetricsDb {
     }
 
     /// Get duration statistics for a date range
-    fn get_duration_stats_range(&self, scope_id: &str, start: i64, end: i64) -> Result<(Option<u32>, Option<u32>, Option<u32>)> {
+    fn get_duration_stats_range(
+        &self,
+        scope_id: &str,
+        start: i64,
+        end: i64,
+    ) -> Result<(Option<u32>, Option<u32>, Option<u32>)> {
         let mut stmt = self.conn.prepare(
             r"
             SELECT
@@ -317,8 +332,8 @@ impl MetricsDb {
         let result = stmt.query_row(params![scope_id, start, end], |row| {
             Ok((
                 row.get::<_, Option<f64>>(0)?.map(|v| v as u32),
-                row.get::<_, Option<i32>>(1)?.map(|v| v as u32),
-                row.get::<_, Option<i32>>(2)?.map(|v| v as u32),
+                row.get::<_, Option<i64>>(1)?.map(|v| v as u32),
+                row.get::<_, Option<i64>>(2)?.map(|v| v as u32),
             ))
         })?;
 
@@ -337,19 +352,23 @@ impl MetricsDb {
             ",
         )?;
 
-        let (total, online): (i32, i32) = stmt.query_row(params![scope_id, cutoff], |row| {
+        let (total, online): (i64, i64) = stmt.query_row(params![scope_id, cutoff], |row| {
             Ok((row.get(0)?, row.get(1)?))
         })?;
 
         if total > 0 {
-            Ok(Some((f64::from(online) / f64::from(total)) * 100.0))
+            Ok(Some((online as f64 / total as f64) * 100.0))
         } else {
             Ok(None)
         }
     }
 
     /// Get duration distribution buckets
-    pub fn get_duration_distribution(&self, scope: &RunnerScope, days: i32) -> Result<Vec<DurationBucket>> {
+    pub fn get_duration_distribution(
+        &self,
+        scope: &RunnerScope,
+        days: i32,
+    ) -> Result<Vec<DurationBucket>> {
         let scope_id = scope.to_display();
         let cutoff = (Utc::now() - Duration::days(i64::from(days))).timestamp();
 
@@ -384,16 +403,11 @@ impl MetricsDb {
         let rows = stmt.query_map(params![scope_id, cutoff], |row| {
             Ok(DurationBucket {
                 label: row.get(0)?,
-                count: row.get::<_, i32>(1)? as u32,
+                count: row.get::<_, i64>(1)? as u32,
             })
         })?;
 
-        let mut buckets = Vec::new();
-        for row in rows {
-            buckets.push(row?);
-        }
-
-        Ok(buckets)
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     /// Get all unique scopes that have recorded data
@@ -408,12 +422,7 @@ impl MetricsDb {
 
         let rows = stmt.query_map([], |row| row.get(0))?;
 
-        let mut scopes = Vec::new();
-        for row in rows {
-            scopes.push(row?);
-        }
-
-        Ok(scopes)
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     /// Calculate trend from two values
@@ -491,10 +500,8 @@ mod tests {
 
     #[test]
     fn test_duration_calculation() {
-        let duration = MetricsDb::calculate_duration(
-            "2024-01-01T10:00:00Z",
-            "2024-01-01T10:05:00Z",
-        );
+        let duration =
+            MetricsDb::calculate_duration("2024-01-01T10:00:00Z", "2024-01-01T10:05:00Z");
         assert_eq!(duration, Some(300)); // 5 minutes = 300 seconds
     }
 
