@@ -19,17 +19,33 @@ impl ScanConfig {
         Config::config_dir().join("scan.toml")
     }
 
-    /// Load scan config from file, returning default if file doesn't exist
+    /// Load scan config from file, returning default if file doesn't exist.
+    /// Logs a warning if the file exists but contains invalid TOML.
     pub fn load() -> Self {
         let path = Self::config_file();
         if !path.exists() {
             return Self::default();
         }
 
-        fs::read_to_string(&path)
-            .ok()
-            .and_then(|content| toml::from_str(&content).ok())
-            .unwrap_or_default()
+        match fs::read_to_string(&path) {
+            Ok(content) => match toml::from_str(&content) {
+                Ok(config) => config,
+                Err(e) => {
+                    eprintln!(
+                        "warning: Failed to parse {}: {e}. Using default scan paths.",
+                        path.display()
+                    );
+                    Self::default()
+                }
+            },
+            Err(e) => {
+                eprintln!(
+                    "warning: Failed to read {}: {e}. Using default scan paths.",
+                    path.display()
+                );
+                Self::default()
+            }
+        }
     }
 
     /// Save scan config to file

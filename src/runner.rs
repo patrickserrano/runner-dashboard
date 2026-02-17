@@ -9,6 +9,12 @@ use std::sync::Mutex;
 use crate::config::{Config, ScanConfig};
 use crate::github::{GitHubClient, RunnerScope};
 
+/// Max depth for scanning ~/Developer directory (more conservative for default path)
+const DEFAULT_DEVELOPER_SCAN_DEPTH: u32 = 3;
+
+/// Max depth for user-specified recursive paths (more generous for explicit choices)
+const USER_RECURSIVE_SCAN_DEPTH: u32 = 5;
+
 static VERBOSE: AtomicBool = AtomicBool::new(false);
 static LOG_SENDER: Mutex<Option<SyncSender<String>>> = Mutex::new(None);
 
@@ -917,7 +923,7 @@ pub fn scan_for_runners(extra_paths: Option<&str>) -> Vec<DiscoveredRunner> {
         // ~/Developer/** - recursively scan Developer directory
         let developer_dir = home.join("Developer");
         if developer_dir.is_dir() {
-            scan_directory_recursive(&developer_dir, &mut paths_to_scan, 3);
+            scan_directory_recursive(&developer_dir, &mut paths_to_scan, DEFAULT_DEVELOPER_SCAN_DEPTH);
         }
     }
 
@@ -1053,7 +1059,7 @@ fn add_path_to_scan(path_str: &str, paths: &mut Vec<PathBuf>) {
                 path.clone()
             };
             if base_path.is_dir() {
-                scan_directory_recursive(&base_path, paths, 5);
+                scan_directory_recursive(&base_path, paths, USER_RECURSIVE_SCAN_DEPTH);
             }
         } else {
             paths.push(path);
