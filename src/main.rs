@@ -523,13 +523,19 @@ fn cmd_scan(extra_paths: Option<&str>, auto_import: bool) -> Result<()> {
     if discovered.is_empty() {
         println!("No runner directories found.");
         println!();
-        println!("Common locations scanned:");
+        println!("Default locations scanned:");
         println!("  ~/actions-runner*");
         println!("  ~/runners/*");
+        println!("  ~/Developer/** (recursive)");
         println!("  /opt/*runner*");
         println!("  /home/*/actions-runner*");
         println!();
-        println!("Use --paths to scan additional directories.");
+        println!("Options:");
+        println!("  --paths <dir1,dir2>    Scan additional directories");
+        println!(
+            "  {}   Add persistent custom paths",
+            config::ScanConfig::config_file().display()
+        );
         return Ok(());
     }
 

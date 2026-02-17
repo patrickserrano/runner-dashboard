@@ -146,11 +146,31 @@ The TUI shows two panels:
 | Path | Purpose |
 |------|---------|
 | `~/.config/runner-mgr/config.toml` | PAT, runner user, OS/arch settings |
+| `~/.config/runner-mgr/scan.toml` | Custom scan paths for runner discovery |
 | `/opt/github-runners/template/` | Runner binary template (shared across instances) |
 | `/opt/github-runners/instances/<owner>__<repo>/` | Per-repo runner instances |
 | `/opt/github-runners/instances/org__<orgname>/` | Per-org runner instances |
 
 The config file is created with `600` permissions and the config directory with `700` permissions to protect your PAT.
+
+### Custom Scan Paths
+
+The `scan` command searches these locations by default:
+- `~/actions-runner*`
+- `~/runners/*`
+- `~/Developer/**` (recursive, up to 3 levels deep)
+- `/opt/*runner*`
+- `/home/*/actions-runner*`
+
+To add custom persistent scan paths, create `~/.config/runner-mgr/scan.toml`:
+
+```toml
+# Additional paths to scan for runners
+paths = [
+    "~/projects/runners",
+    "/data/github-runners/**",  # ** for recursive scanning
+]
+```
 
 ## Architecture
 
