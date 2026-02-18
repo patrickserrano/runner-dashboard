@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-02-17
+
+### Bug Fixes
+
+- Add tag_name to release upload for workflow_dispatch ([#19](https://github.com/patrickserrano/runner-dashboard/pull/19))
+- Prevent memory leaks in verbose logging ([#14](https://github.com/patrickserrano/runner-dashboard/pull/14))
+- Correct release-plz commit message pattern
+- Correct launchctl service target format for macOS ([#8](https://github.com/patrickserrano/runner-dashboard/pull/8))
+- Use launchctl/systemctl directly for start/stop ([#5](https://github.com/patrickserrano/runner-dashboard/pull/5))
+- Handle UTF-8 BOM in .runner config files ([#4](https://github.com/patrickserrano/runner-dashboard/pull/4))
+
+### CI
+
+- Auto-trigger release workflow after version bump
+- Improve release workflow and add CODEOWNERS ([#18](https://github.com/patrickserrano/runner-dashboard/pull/18))
+- Publish releases automatically instead of as drafts ([#16](https://github.com/patrickserrano/runner-dashboard/pull/16))
+- Auto-update Homebrew tap on release
+
+### Documentation
+
+- Add comprehensive documentation ([#20](https://github.com/patrickserrano/runner-dashboard/pull/20))
+- Add Homebrew installation and import command
+
+### Features
+
+- Add metrics dashboard with SQLite persistence ([#24](https://github.com/patrickserrano/runner-dashboard/pull/24))
+- Add ~/Developer as default scan path and support scan config file ([#21](https://github.com/patrickserrano/runner-dashboard/pull/21))
+- Add organization runner support and auto-scan command ([#17](https://github.com/patrickserrano/runner-dashboard/pull/17))
+- Add verbose log panel to TUI dashboard ([#11](https://github.com/patrickserrano/runner-dashboard/pull/11))
+- Add --verbose flag for debugging ([#7](https://github.com/patrickserrano/runner-dashboard/pull/7))
+- Add import command and update dependencies ([#2](https://github.com/patrickserrano/runner-dashboard/pull/2))
+- Add macOS code signing and notarization
+- Initial release ([#1](https://github.com/patrickserrano/runner-dashboard/pull/1))
+
+### Miscellaneous
+
+- Release v0.3.1
+- Add .claude to gitignore
+- Release v0.2.6 ([#15](https://github.com/patrickserrano/runner-dashboard/pull/15))
+- Release v0.2.5 ([#13](https://github.com/patrickserrano/runner-dashboard/pull/13))
+- Bump version to 0.2.5 ([#12](https://github.com/patrickserrano/runner-dashboard/pull/12))
+- Release v0.2.4 ([#10](https://github.com/patrickserrano/runner-dashboard/pull/10))
+- Bump version to 0.2.4 for launchctl fix
+- Disable crates.io publish check for release-plz
+- Bump version to 0.2.1
+
+
+
 ## [0.3.0] - 2026-02-16
 
 ### Features
