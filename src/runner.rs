@@ -272,17 +272,22 @@ pub async fn add_runner(config: &Config, scope: &RunnerScope, labels: &str) -> R
     )?;
 
     // Install service
+    // Run svc.sh AS the runner user so it has write access to ./bin/ and ~/Library/LaunchAgents/
     println!("Installing service (user: {})...", config.runner_user);
     let svc_sh = dir.join("svc.sh");
     run_cmd_in_dir(
         &dir,
         "sudo",
-        &[&svc_sh.to_string_lossy(), "install", &config.runner_user],
+        &["-u", &config.runner_user, &svc_sh.to_string_lossy(), "install"],
     )?;
 
-    // Start service
+    // Start service (run as runner user for LaunchAgent)
     println!("Starting service...");
-    run_cmd_in_dir(&dir, "sudo", &[&svc_sh.to_string_lossy(), "start"])?;
+    run_cmd_in_dir(
+        &dir,
+        "sudo",
+        &["-u", &config.runner_user, &svc_sh.to_string_lossy(), "start"],
+    )?;
 
     println!();
     println!("Runner registered and running for {scope}");
@@ -304,13 +309,21 @@ pub async fn remove_runner(config: &Config, scope: &RunnerScope) -> Result<()> {
 
     let svc_sh = dir.join("svc.sh");
 
-    // Stop service
+    // Stop service (run as runner user for LaunchAgent)
     if dir.join(".service").exists() {
         println!("Stopping service...");
-        let _ = run_cmd_in_dir(&dir, "sudo", &[&svc_sh.to_string_lossy(), "stop"]);
+        let _ = run_cmd_in_dir(
+            &dir,
+            "sudo",
+            &["-u", &config.runner_user, &svc_sh.to_string_lossy(), "stop"],
+        );
 
         println!("Uninstalling service...");
-        let _ = run_cmd_in_dir(&dir, "sudo", &[&svc_sh.to_string_lossy(), "uninstall"]);
+        let _ = run_cmd_in_dir(
+            &dir,
+            "sudo",
+            &["-u", &config.runner_user, &svc_sh.to_string_lossy(), "uninstall"],
+        );
     }
 
     // Deregister from GitHub
