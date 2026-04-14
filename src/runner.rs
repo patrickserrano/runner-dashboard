@@ -493,7 +493,7 @@ pub fn stop_runner(config: &Config, scope: &RunnerScope) -> Result<()> {
                 // Fallback: try bootout to stop and unload
                 run_cmd("sudo", &["launchctl", "bootout", &service_target])
             })
-            .or_else(|_| Err(anyhow::anyhow!("Failed to stop service {service_label}")))
+            .map_err(|_| anyhow::anyhow!("Failed to stop service {service_label}"))
             .context("Failed to stop runner service")?;
     } else {
         // Linux: use systemctl for system service
