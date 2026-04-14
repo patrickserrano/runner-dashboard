@@ -272,17 +272,38 @@ pub async fn add_runner(config: &Config, scope: &RunnerScope, labels: &str) -> R
     )?;
 
     // Install service
+    // On macOS, run svc.sh AS the runner user to access ~/Library/LaunchAgents/
+    // On Linux, run as root to access /etc/systemd/system/
     println!("Installing service (user: {})...", config.runner_user);
     let svc_sh = dir.join("svc.sh");
-    run_cmd_in_dir(
-        &dir,
-        "sudo",
-        &[&svc_sh.to_string_lossy(), "install", &config.runner_user],
-    )?;
+    let svc_sh_path = svc_sh.to_string_lossy();
+    if config.runner_os == "darwin" {
+        run_cmd_in_dir(
+            &dir,
+            "sudo",
+            &["-u", &config.runner_user, &svc_sh_path, "install"],
+        )?;
+    } else {
+        run_cmd_in_dir(
+            &dir,
+            "sudo",
+            &[&svc_sh_path, "install", &config.runner_user],
+        )?;
+    }
 
     // Start service
+    // On macOS, run as runner user for LaunchAgent
+    // On Linux, run as root for systemd
     println!("Starting service...");
-    run_cmd_in_dir(&dir, "sudo", &[&svc_sh.to_string_lossy(), "start"])?;
+    if config.runner_os == "darwin" {
+        run_cmd_in_dir(
+            &dir,
+            "sudo",
+            &["-u", &config.runner_user, &svc_sh_path, "start"],
+        )?;
+    } else {
+        run_cmd_in_dir(&dir, "sudo", &[&svc_sh_path, "start"])?;
+    }
 
     println!();
     println!("Runner registered and running for {scope}");
@@ -303,14 +324,33 @@ pub async fn remove_runner(config: &Config, scope: &RunnerScope) -> Result<()> {
     println!("Removing runner for {scope}...");
 
     let svc_sh = dir.join("svc.sh");
+    let svc_sh_path = svc_sh.to_string_lossy();
 
     // Stop service
+    // On macOS, run as runner user for LaunchAgent
+    // On Linux, run as root for systemd
     if dir.join(".service").exists() {
         println!("Stopping service...");
-        let _ = run_cmd_in_dir(&dir, "sudo", &[&svc_sh.to_string_lossy(), "stop"]);
+        if config.runner_os == "darwin" {
+            let _ = run_cmd_in_dir(
+                &dir,
+                "sudo",
+                &["-u", &config.runner_user, &svc_sh_path, "stop"],
+            );
+        } else {
+            let _ = run_cmd_in_dir(&dir, "sudo", &[&svc_sh_path, "stop"]);
+        }
 
         println!("Uninstalling service...");
-        let _ = run_cmd_in_dir(&dir, "sudo", &[&svc_sh.to_string_lossy(), "uninstall"]);
+        if config.runner_os == "darwin" {
+            let _ = run_cmd_in_dir(
+                &dir,
+                "sudo",
+                &["-u", &config.runner_user, &svc_sh_path, "uninstall"],
+            );
+        } else {
+            let _ = run_cmd_in_dir(&dir, "sudo", &[&svc_sh_path, "uninstall"]);
+        }
     }
 
     // Deregister from GitHub
