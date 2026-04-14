@@ -128,14 +128,29 @@ fn check_service_status(config: &Config, service_name: Option<&str>) -> RunnerSt
     };
 
     if config.runner_os == "darwin" {
-        // Extract just the service label for launchctl list
-        let service_label = extract_service_label(svc);
+        // For LaunchAgents, we need to check the correct gui/<uid> domain
+        let Ok((_, service_target)) = parse_macos_service(svc, &config.runner_user) else {
+            return RunnerStatus::Unknown;
+        };
+
+        // Use launchctl print to check if service is loaded and running
         let output = Command::new("sudo")
-            .args(["launchctl", "list", &service_label])
+            .args(["launchctl", "print", &service_target])
             .output();
 
         match output {
-            Ok(o) if o.status.success() => RunnerStatus::Running,
+            Ok(o) if o.status.success() => {
+                // Check if the output indicates the service is running
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                if stdout.contains("state = running") {
+                    RunnerStatus::Running
+                } else if stdout.contains("state = ") {
+                    RunnerStatus::Stopped
+                } else {
+                    // Service is loaded but state unclear - assume running
+                    RunnerStatus::Running
+                }
+            }
             _ => RunnerStatus::Stopped,
         }
     } else {
@@ -409,11 +424,26 @@ pub fn start_runner(config: &Config, scope: &RunnerScope) -> Result<()> {
         let is_plist = plist_path
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("plist"));
+
+        // Determine the domain for bootstrap (e.g., "gui/501" or "system")
+        let domain = if service_target.starts_with("gui/") {
+            // Extract "gui/<uid>" from "gui/<uid>/<label>"
+            let parts: Vec<&str> = service_target.splitn(3, '/').collect();
+            if parts.len() >= 2 {
+                format!("{}/{}", parts[0], parts[1])
+            } else {
+                service_target.clone()
+            }
+        } else {
+            "system".to_string()
+        };
+
         run_cmd("sudo", &["launchctl", "kickstart", "-k", &service_target])
             .or_else(|_| {
-                // Fallback: try loading the plist directly if kickstart fails
+                // Fallback: try bootstrapping the plist if kickstart fails
+                // This loads and starts the service in the correct domain
                 if is_plist && plist_path.exists() {
-                    run_cmd("sudo", &["launchctl", "load", service_name])
+                    run_cmd("sudo", &["launchctl", "bootstrap", &domain, service_name])
                 } else {
                     Err(anyhow::anyhow!("Failed to start service {service_label}"))
                 }
@@ -455,19 +485,15 @@ pub fn stop_runner(config: &Config, scope: &RunnerScope) -> Result<()> {
         // macOS: use launchctl to stop the service
         let (service_label, service_target) =
             parse_macos_service(service_name, &config.runner_user)?;
-        let plist_path = Path::new(service_name);
-        let is_plist = plist_path
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("plist"));
+
+        // Use launchctl kill to stop the service (keeps it loaded)
+        // or bootout to stop and unload (for full stop)
         run_cmd("sudo", &["launchctl", "kill", "SIGTERM", &service_target])
             .or_else(|_| {
-                // Fallback: try unloading the plist directly if kill fails
-                if is_plist && plist_path.exists() {
-                    run_cmd("sudo", &["launchctl", "unload", service_name])
-                } else {
-                    Err(anyhow::anyhow!("Failed to stop service {service_label}"))
-                }
+                // Fallback: try bootout to stop and unload
+                run_cmd("sudo", &["launchctl", "bootout", &service_target])
             })
+            .or_else(|_| Err(anyhow::anyhow!("Failed to stop service {service_label}")))
             .context("Failed to stop runner service")?;
     } else {
         // Linux: use systemctl for system service
