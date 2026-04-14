@@ -273,6 +273,7 @@ pub async fn add_runner(config: &Config, scope: &RunnerScope, labels: &str) -> R
 
     // Install service
     // On macOS, run svc.sh AS the runner user to access ~/Library/LaunchAgents/
+    // Use -H to set HOME to the runner user's home directory
     // On Linux, run as root to access /etc/systemd/system/
     println!("Installing service (user: {})...", config.runner_user);
     let svc_sh = dir.join("svc.sh");
@@ -281,7 +282,7 @@ pub async fn add_runner(config: &Config, scope: &RunnerScope, labels: &str) -> R
         run_cmd_in_dir(
             &dir,
             "sudo",
-            &["-u", &config.runner_user, &svc_sh_path, "install"],
+            &["-H", "-u", &config.runner_user, &svc_sh_path, "install"],
         )?;
     } else {
         run_cmd_in_dir(
@@ -292,14 +293,14 @@ pub async fn add_runner(config: &Config, scope: &RunnerScope, labels: &str) -> R
     }
 
     // Start service
-    // On macOS, run as runner user for LaunchAgent
+    // On macOS, run as runner user for LaunchAgent (with -H for correct HOME)
     // On Linux, run as root for systemd
     println!("Starting service...");
     if config.runner_os == "darwin" {
         run_cmd_in_dir(
             &dir,
             "sudo",
-            &["-u", &config.runner_user, &svc_sh_path, "start"],
+            &["-H", "-u", &config.runner_user, &svc_sh_path, "start"],
         )?;
     } else {
         run_cmd_in_dir(&dir, "sudo", &[&svc_sh_path, "start"])?;
@@ -327,7 +328,7 @@ pub async fn remove_runner(config: &Config, scope: &RunnerScope) -> Result<()> {
     let svc_sh_path = svc_sh.to_string_lossy();
 
     // Stop service
-    // On macOS, run as runner user for LaunchAgent
+    // On macOS, run as runner user for LaunchAgent (with -H for correct HOME)
     // On Linux, run as root for systemd
     if dir.join(".service").exists() {
         println!("Stopping service...");
@@ -335,7 +336,7 @@ pub async fn remove_runner(config: &Config, scope: &RunnerScope) -> Result<()> {
             let _ = run_cmd_in_dir(
                 &dir,
                 "sudo",
-                &["-u", &config.runner_user, &svc_sh_path, "stop"],
+                &["-H", "-u", &config.runner_user, &svc_sh_path, "stop"],
             );
         } else {
             let _ = run_cmd_in_dir(&dir, "sudo", &[&svc_sh_path, "stop"]);
@@ -346,7 +347,7 @@ pub async fn remove_runner(config: &Config, scope: &RunnerScope) -> Result<()> {
             let _ = run_cmd_in_dir(
                 &dir,
                 "sudo",
-                &["-u", &config.runner_user, &svc_sh_path, "uninstall"],
+                &["-H", "-u", &config.runner_user, &svc_sh_path, "uninstall"],
             );
         } else {
             let _ = run_cmd_in_dir(&dir, "sudo", &[&svc_sh_path, "uninstall"]);
