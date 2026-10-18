@@ -124,6 +124,26 @@ impl Config {
         self.instances_dir().join(scope.to_dir_name())
     }
 
+    /// Return the instance directory for a specific runner.
+    ///
+    /// Multiple self-hosted runners may target the same repository or
+    /// organization, so the GitHub scope alone is not a unique local key.
+    pub fn instance_dir_named(&self, scope: &RunnerScope, runner_name: &str) -> PathBuf {
+        let safe_runner_name: String = runner_name
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+
+        self.instances_dir()
+            .join(format!("{}___{}", scope.to_dir_name(), safe_runner_name))
+    }
+
     pub fn detect_os() -> String {
         if cfg!(target_os = "macos") {
             "darwin".to_string()

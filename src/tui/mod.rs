@@ -248,27 +248,40 @@ impl App {
             },
             KeyCode::Char('s') => {
                 if self.active_panel == Panel::Runners && !self.instances.is_empty() {
-                    let scope = self.instances[self.selected_runner].scope.clone();
-                    let status = &self.instances[self.selected_runner].status;
+                    let instance = self.instances[self.selected_runner].clone();
+                    let scope = instance.scope.clone();
+                    let runner_name = instance.runner_name.clone();
+                    let status = &instance.status;
+
                     match status {
                         runner::RunnerStatus::Running => {
-                            match runner::stop_runner(&self.config, &scope) {
-                                Ok(()) => self.set_status(format!("Stopped {scope}")),
+                            match runner::stop_runner(&self.config, &runner_name) {
+                                Ok(()) => {
+                                    self.set_status(format!("Stopped {runner_name} ({scope})"));
+                                }
                                 Err(e) => {
-                                    self.set_status(format!("Error stopping {scope}: {e}"));
+                                    self.set_status(format!(
+                                        "Error stopping {runner_name} ({scope}): {e}"
+                                    ));
                                 }
                             }
                         }
                         runner::RunnerStatus::Stopped => {
-                            match runner::start_runner(&self.config, &scope) {
-                                Ok(()) => self.set_status(format!("Started {scope}")),
+                            match runner::start_runner(&self.config, &runner_name) {
+                                Ok(()) => {
+                                    self.set_status(format!("Started {runner_name} ({scope})"));
+                                }
                                 Err(e) => {
-                                    self.set_status(format!("Error starting {scope}: {e}"));
+                                    self.set_status(format!(
+                                        "Error starting {runner_name} ({scope}): {e}"
+                                    ));
                                 }
                             }
                         }
                         _ => {
-                            self.set_status(format!("Cannot toggle {scope} (status: {status})"));
+                            self.set_status(format!(
+                                "Cannot toggle {runner_name} ({scope}) (status: {status})"
+                            ));
                         }
                     }
                     // Refresh local status immediately

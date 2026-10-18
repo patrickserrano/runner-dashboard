@@ -131,8 +131,7 @@ fn test_get_logs_nonexistent_repo() {
         instances_base: tmp.path().to_str().unwrap().to_string(),
     };
 
-    let scope = RunnerScope::parse("nonexistent/repo").unwrap();
-    let result = runner_mgr::runner::get_runner_logs(&config, &scope, 50);
+    let result = runner_mgr::runner::get_runner_logs(&config, "nonexistent/repo", 50);
     assert!(result.is_err());
     let err = format!("{:#}", result.unwrap_err());
     assert!(err.contains("No runner configured"));
@@ -278,4 +277,111 @@ fn test_import_runner_not_a_runner_directory() {
     assert!(err.contains("Not a valid runner directory"));
 
     std::env::remove_var("RUNNER_MGR_CONFIG_DIR");
+}
+
+// Multi-runner regression tests
+
+fn multi_runner_test_config(tmp: &TempDir) -> runner_mgr::config::Config {
+    runner_mgr::config::Config {
+        github_pat: "ghp_test".to_string(),
+        github_user: "user".to_string(),
+        runner_user: "github".to_string(),
+        runner_os: "linux".to_string(),
+        runner_arch: "x64".to_string(),
+        instances_base: tmp.path().to_str().unwrap().to_string(),
+    }
+}
+
+fn create_named_instance(
+    config: &runner_mgr::config::Config,
+    dir_name: &str,
+) -> std::path::PathBuf {
+    let dir = std::path::Path::new(&config.instances_base)
+        .join("instances")
+        .join(dir_name);
+
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn test_multiple_named_instances_same_scope_are_preserved() {
+    let tmp = TempDir::new().unwrap();
+    let config = multi_runner_test_config(&tmp);
+
+    create_named_instance(&config, "owner__repo___runner-one");
+    create_named_instance(&config, "owner__repo___runner-two");
+
+    let instances = runner_mgr::runner::list_instances(&config);
+
+    assert_eq!(instances.len(), 2);
+
+    let mut names: Vec<_> = instances
+        .iter()
+        .map(|instance| instance.runner_name.as_str())
+        .collect();
+    names.sort_unstable();
+
+    assert_eq!(names, vec!["runner-one", "runner-two"]);
+
+    assert!(instances
+        .iter()
+        .all(|instance| instance.scope.to_display() == "owner/repo"));
+}
+
+#[test]
+fn test_find_instance_by_runner_name_with_shared_scope() {
+    let tmp = TempDir::new().unwrap();
+    let config = multi_runner_test_config(&tmp);
+
+    create_named_instance(&config, "owner__repo___runner-one");
+    create_named_instance(&config, "owner__repo___runner-two");
+
+    let instance = runner_mgr::runner::find_instance(&config, "runner-two").unwrap();
+
+    assert_eq!(instance.runner_name, "runner-two");
+    assert_eq!(instance.scope.to_display(), "owner/repo");
+    assert!(instance.dir.ends_with("owner__repo___runner-two"));
+}
+
+#[test]
+fn test_find_instance_rejects_ambiguous_scope() {
+    let tmp = TempDir::new().unwrap();
+    let config = multi_runner_test_config(&tmp);
+
+    create_named_instance(&config, "owner__repo___runner-one");
+    create_named_instance(&config, "owner__repo___runner-two");
+
+    let result = runner_mgr::runner::find_instance(&config, "owner/repo");
+
+    assert!(result.is_err());
+
+    let err = format!("{:#}", result.unwrap_err());
+
+    assert!(err.contains("Multiple runners are configured for owner/repo"));
+    assert!(err.contains("runner-one"));
+    assert!(err.contains("runner-two"));
+    assert!(err.contains("Select a runner by name"));
+}
+
+#[test]
+fn test_instance_dir_named_is_unique_and_sanitized() {
+    let tmp = TempDir::new().unwrap();
+    let config = multi_runner_test_config(&tmp);
+    let scope = RunnerScope::parse("owner/repo").unwrap();
+
+    let first = config.instance_dir_named(&scope, "runner-one");
+    let second = config.instance_dir_named(&scope, "runner two/@mac");
+
+    assert_ne!(first, second);
+
+    assert_eq!(
+        first.file_name().unwrap().to_string_lossy(),
+        "owner__repo___runner-one"
+    );
+
+    assert_eq!(
+        second.file_name().unwrap().to_string_lossy(),
+        "owner__repo___runner_two__mac"
+    );
 }

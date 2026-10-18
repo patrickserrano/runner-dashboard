@@ -91,13 +91,15 @@ fn draw_runners_panel(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::Gray)
     };
 
-    let header_cells = ["Target", "Local", "GitHub", "Busy"].iter().map(|h| {
-        Cell::from(*h).style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )
-    });
+    let header_cells = ["Target", "Runner", "Local", "GitHub", "Busy"]
+        .iter()
+        .map(|h| {
+            Cell::from(*h).style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+        });
     let header = Row::new(header_cells).height(1);
 
     let rows: Vec<Row> = app
@@ -112,7 +114,11 @@ fn draw_runners_panel(f: &mut Frame, app: &App, area: Rect) {
                 .github_runners
                 .iter()
                 .find(|(scope, _)| scope == &instance.scope)
-                .and_then(|(_, runners)| runners.first());
+                .and_then(|(_, runners)| {
+                    runners
+                        .iter()
+                        .find(|r| r.name.as_str() == instance.runner_name.as_str())
+                });
 
             let (gh_status, busy) = if let Some(r) = gh_runner {
                 let status_style = match r.status.as_str() {
@@ -149,6 +155,7 @@ fn draw_runners_panel(f: &mut Frame, app: &App, area: Rect) {
 
             Row::new(vec![
                 Cell::from(scope_display),
+                Cell::from(instance.runner_name.clone()),
                 Cell::from(local_status),
                 Cell::from(gh_status),
                 Cell::from(busy),
@@ -168,8 +175,9 @@ fn draw_runners_panel(f: &mut Frame, app: &App, area: Rect) {
         rows,
         [
             Constraint::Min(20),
-            Constraint::Length(10),
-            Constraint::Length(10),
+            Constraint::Length(18),
+            Constraint::Length(9),
+            Constraint::Length(9),
             Constraint::Length(6),
         ],
     )

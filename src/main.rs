@@ -345,9 +345,8 @@ async fn cmd_add(target: &str, labels: &str) -> Result<()> {
 }
 
 async fn cmd_remove(target: &str) -> Result<()> {
-    let scope = RunnerScope::parse(target)?;
     let config = Config::load()?;
-    runner::remove_runner(&config, &scope).await
+    runner::remove_runner(&config, target).await
 }
 
 fn cmd_start(target: &str) -> Result<()> {
@@ -356,8 +355,7 @@ fn cmd_start(target: &str) -> Result<()> {
         runner::start_all(&config);
         Ok(())
     } else {
-        let scope = RunnerScope::parse(target)?;
-        runner::start_runner(&config, &scope)
+        runner::start_runner(&config, target)
     }
 }
 
@@ -367,8 +365,7 @@ fn cmd_stop(target: &str) -> Result<()> {
         runner::stop_all(&config);
         Ok(())
     } else {
-        let scope = RunnerScope::parse(target)?;
-        runner::stop_runner(&config, &scope)
+        runner::stop_runner(&config, target)
     }
 }
 
@@ -378,8 +375,7 @@ fn cmd_restart(target: &str) -> Result<()> {
         runner::restart_all(&config);
         Ok(())
     } else {
-        let scope = RunnerScope::parse(target)?;
-        runner::restart_runner(&config, &scope)
+        runner::restart_runner(&config, target)
     }
 }
 
@@ -392,14 +388,20 @@ fn cmd_status() -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<40}  {:<10}  {:<20}", "TARGET", "STATUS", "SERVICE");
-    println!("{:<40}  {:<10}  {:<20}", "------", "------", "-------");
+    println!(
+        "{:<32}  {:<22}  {:<10}  {:<20}",
+        "TARGET", "RUNNER", "STATUS", "SERVICE"
+    );
+    println!(
+        "{:<32}  {:<22}  {:<10}  {:<20}",
+        "------", "------", "------", "-------"
+    );
 
     for instance in &instances {
         let svc = instance.service_name.as_deref().unwrap_or("-");
         println!(
-            "{:<40}  {:<10}  {:<20}",
-            instance.scope, instance.status, svc
+            "{:<32}  {:<22}  {:<10}  {:<20}",
+            instance.scope, instance.runner_name, instance.status, svc
         );
     }
 
@@ -407,9 +409,8 @@ fn cmd_status() -> Result<()> {
 }
 
 fn cmd_logs(target: &str, lines: u32) -> Result<()> {
-    let scope = RunnerScope::parse(target)?;
     let config = Config::load()?;
-    let logs = runner::get_runner_logs(&config, &scope, lines)?;
+    let logs = runner::get_runner_logs(&config, target, lines)?;
     println!("{logs}");
     Ok(())
 }
@@ -540,21 +541,37 @@ fn cmd_scan(extra_paths: Option<&str>, auto_import: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Get already managed runners
+    // Get already managed runners.
+    // A runner is uniquely identified by both its GitHub scope and runner name.
     let managed = runner::list_instances(&config);
-    let managed_scopes: std::collections::HashSet<_> = managed.iter().map(|i| &i.scope).collect();
+    let managed_keys: std::collections::HashSet<_> = managed
+        .iter()
+        .map(|i| (i.scope.clone(), i.runner_name.clone()))
+        .collect();
 
-    // Filter out already managed runners
+    // A discovered runner without an agent name cannot be proven to match
+    // a managed instance, so leave it eligible for explicit inspection/import.
     let unmanaged: Vec<_> = discovered
         .iter()
-        .filter(|r| !managed_scopes.contains(&r.scope))
+        .filter(|r| {
+            r.agent_name
+                .as_ref()
+                .map(|name| !managed_keys.contains(&(r.scope.clone(), name.clone())))
+                .unwrap_or(true)
+        })
         .collect();
 
     println!("Found {} runner(s):", discovered.len());
     println!();
 
     for runner in &discovered {
-        let status = if managed_scopes.contains(&runner.scope) {
+        let is_managed = runner
+            .agent_name
+            .as_ref()
+            .map(|name| managed_keys.contains(&(runner.scope.clone(), name.clone())))
+            .unwrap_or(false);
+
+        let status = if is_managed {
             "[managed]"
         } else {
             "[not managed]"

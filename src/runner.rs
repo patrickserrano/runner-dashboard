@@ -48,6 +48,7 @@ fn verbose_log(msg: &str) {
 #[derive(Debug, Clone)]
 pub struct RunnerInstance {
     pub scope: RunnerScope,
+    pub runner_name: String,
     pub dir: PathBuf,
     pub service_name: Option<String>,
     pub status: RunnerStatus,
@@ -94,16 +95,35 @@ pub fn list_instances(config: &Config) -> Vec<RunnerInstance> {
             continue;
         };
 
-        // Parse the directory name into a RunnerScope
-        let Some(scope) = RunnerScope::from_dir_name(&name) else {
+        // New-format instance directories use:
+        //   <scope>___<runner-name>
+        //
+        // Example:
+        //   mushheads__next-portal___imarx-light-2
+        //
+        // Legacy scope-only instance names remain readable.
+        let (scope_dir_name, encoded_runner_name) =
+            if let Some((scope_name, runner_name)) = name.rsplit_once("___") {
+                (scope_name, Some(runner_name))
+            } else {
+                (name.as_str(), None)
+            };
+
+        let Some(scope) = RunnerScope::from_dir_name(scope_dir_name) else {
             continue;
         };
+
+        let runner_name = encoded_runner_name
+            .map(str::to_string)
+            .or_else(|| read_runner_name(&path))
+            .unwrap_or_else(|| "unknown".to_string());
 
         let service_name = read_service_name(&path);
         let status = check_service_status(config, service_name.as_deref());
 
         instances.push(RunnerInstance {
             scope,
+            runner_name,
             dir: path,
             service_name,
             status,
@@ -112,6 +132,20 @@ pub fn list_instances(config: &Config) -> Vec<RunnerInstance> {
 
     instances.sort_by(|a, b| a.scope.to_display().cmp(&b.scope.to_display()));
     instances
+}
+
+fn read_runner_name(dir: &Path) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct RunnerConfig {
+        #[serde(rename = "agentName")]
+        agent_name: Option<String>,
+    }
+
+    let content = fs::read_to_string(dir.join(".runner")).ok()?;
+    let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
+    let config: RunnerConfig = serde_json::from_str(content).ok()?;
+
+    config.agent_name.filter(|name| !name.is_empty())
 }
 
 fn read_service_name(dir: &Path) -> Option<String> {
@@ -219,13 +253,43 @@ fn get_user_uid(username: &str) -> Result<u32> {
 }
 
 pub async fn add_runner(config: &Config, scope: &RunnerScope, labels: &str) -> Result<()> {
-    let dir = config.instance_dir(scope);
+    let hostname = hostname::get().map_or_else(
+        |_| "runner".to_string(),
+        |h| h.to_string_lossy().to_string(),
+    );
+    let safe_name = scope.to_dir_name();
+    let generated_name = format!("{hostname}-{safe_name}");
+    let base_name = generated_name[..generated_name.len().min(64)].to_string();
+
+    let existing_names: std::collections::HashSet<String> = list_instances(config)
+        .into_iter()
+        .map(|instance| instance.runner_name)
+        .collect();
+
+    let mut runner_name = base_name.clone();
+    let mut suffix_number = 2usize;
+
+    while existing_names.contains(&runner_name) {
+        let suffix = format!("-{suffix_number}");
+        let max_prefix_len = 64usize.saturating_sub(suffix.len());
+        let prefix_len = base_name.len().min(max_prefix_len);
+        runner_name = format!("{}{}", &base_name[..prefix_len], suffix);
+        suffix_number += 1;
+    }
+
+    let dir = config.instance_dir_named(scope, &runner_name);
 
     if dir.exists() {
-        anyhow::bail!("Runner already configured for {scope}. Use 'remove' first.");
+        anyhow::bail!(
+            "Runner '{}' already configured for {} at {}",
+            runner_name,
+            scope,
+            dir.display()
+        );
     }
 
     println!("Adding runner for {scope}...");
+    println!("  Runner: {runner_name}");
 
     let mut labels = labels.to_string();
     if !labels.contains("self-hosted") {
@@ -257,14 +321,6 @@ pub async fn add_runner(config: &Config, scope: &RunnerScope, labels: &str) -> R
     )?;
 
     // Configure the runner
-    let hostname = hostname::get().map_or_else(
-        |_| "runner".to_string(),
-        |h| h.to_string_lossy().to_string(),
-    );
-    let safe_name = scope.to_dir_name();
-    let runner_name = format!("{hostname}-{safe_name}");
-    let runner_name = &runner_name[..runner_name.len().min(64)];
-
     println!("Configuring runner (name: {runner_name})...");
     let config_sh = dir.join("config.sh");
     run_cmd(
@@ -278,7 +334,7 @@ pub async fn add_runner(config: &Config, scope: &RunnerScope, labels: &str) -> R
             "--token",
             &reg.token,
             "--name",
-            runner_name,
+            &runner_name,
             "--labels",
             &labels,
             "--unattended",
@@ -330,14 +386,13 @@ pub async fn add_runner(config: &Config, scope: &RunnerScope, labels: &str) -> R
     Ok(())
 }
 
-pub async fn remove_runner(config: &Config, scope: &RunnerScope) -> Result<()> {
-    let dir = config.instance_dir(scope);
+pub async fn remove_runner(config: &Config, selector: &str) -> Result<()> {
+    let instance = find_instance(config, selector)?;
+    let scope = &instance.scope;
+    let runner_name = &instance.runner_name;
+    let dir = instance.dir.clone();
 
-    if !dir.exists() {
-        anyhow::bail!("No runner configured for {scope}");
-    }
-
-    println!("Removing runner for {scope}...");
+    println!("Removing runner {runner_name} ({scope})...");
 
     let svc_sh = dir.join("svc.sh");
     let svc_sh_path = svc_sh.to_string_lossy();
@@ -391,43 +446,90 @@ pub async fn remove_runner(config: &Config, scope: &RunnerScope) -> Result<()> {
     println!("Removing instance directory...");
     run_cmd("sudo", &["rm", "-rf", &dir.to_string_lossy()])?;
 
-    println!("Runner removed for {scope}");
+    println!("Runner removed: {runner_name} ({scope})");
     Ok(())
 }
 
-pub fn start_runner(config: &Config, scope: &RunnerScope) -> Result<()> {
-    let dir = config.instance_dir(scope);
-    if !dir.exists() {
-        anyhow::bail!("No runner configured for {scope}");
+/// Find a managed runner by runner name.
+///
+/// For backward compatibility, an owner/repo or org:name scope may also be
+/// supplied when exactly one managed runner exists for that scope.
+pub fn find_instance(config: &Config, selector: &str) -> Result<RunnerInstance> {
+    let instances = list_instances(config);
+
+    let name_matches: Vec<_> = instances
+        .iter()
+        .filter(|i| i.runner_name == selector)
+        .cloned()
+        .collect();
+
+    match name_matches.len() {
+        1 => return Ok(name_matches[0].clone()),
+        n if n > 1 => {
+            anyhow::bail!("Multiple managed runners have the name '{selector}'");
+        }
+        _ => {}
     }
 
-    // Get service name
-    let instances = list_instances(config);
-    let instance = instances
+    if let Ok(scope) = RunnerScope::parse(selector) {
+        let scope_matches: Vec<_> = instances
+            .iter()
+            .filter(|i| i.scope == scope)
+            .cloned()
+            .collect();
+
+        match scope_matches.len() {
+            1 => return Ok(scope_matches[0].clone()),
+            n if n > 1 => {
+                let names = scope_matches
+                    .iter()
+                    .map(|i| i.runner_name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                anyhow::bail!(
+                    "Multiple runners are configured for {scope}: {names}. Select a runner by name."
+                );
+            }
+            _ => {
+                anyhow::bail!("No runner configured for {scope}");
+            }
+        }
+    }
+
+    let available = instances
         .iter()
-        .find(|i| &i.scope == scope)
-        .ok_or_else(|| anyhow::anyhow!("Runner not found for {scope}"))?;
+        .map(|i| i.runner_name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
 
-    let service_name = instance
-        .service_name
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("No service configured for {scope}"))?;
+    if available.is_empty() {
+        anyhow::bail!("No managed runners are configured");
+    }
 
-    println!("Starting {scope}...");
+    anyhow::bail!("Runner '{selector}' not found. Available runners: {available}");
+}
+
+fn start_instance(config: &Config, instance: &RunnerInstance) -> Result<()> {
+    let service_name = instance.service_name.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "No service configured for runner '{}'",
+            instance.runner_name
+        )
+    })?;
+
+    println!("Starting {} ({})...", instance.runner_name, instance.scope);
 
     if config.runner_os == "darwin" {
-        // macOS: use launchctl to start the service
-        // The service could be a LaunchAgent (user) or LaunchDaemon (system)
         let (service_label, service_target) =
             parse_macos_service(service_name, &config.runner_user)?;
+
         let plist_path = Path::new(service_name);
         let is_plist = plist_path
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("plist"));
 
-        // Determine the domain for bootstrap (e.g., "gui/501" or "system")
         let domain = if service_target.starts_with("gui/") {
-            // Extract "gui/<uid>" from "gui/<uid>/<label>"
             let parts: Vec<&str> = service_target.splitn(3, '/').collect();
             if parts.len() >= 2 {
                 format!("{}/{}", parts[0], parts[1])
@@ -440,8 +542,6 @@ pub fn start_runner(config: &Config, scope: &RunnerScope) -> Result<()> {
 
         run_cmd("sudo", &["launchctl", "kickstart", "-k", &service_target])
             .or_else(|_| {
-                // Fallback: try bootstrapping the plist if kickstart fails
-                // This loads and starts the service in the correct domain
                 if is_plist && plist_path.exists() {
                     run_cmd("sudo", &["launchctl", "bootstrap", &domain, service_name])
                 } else {
@@ -450,101 +550,104 @@ pub fn start_runner(config: &Config, scope: &RunnerScope) -> Result<()> {
             })
             .context("Failed to start runner service")?;
     } else {
-        // Linux: use systemctl for system service
-        // The service runs as the user specified in the unit file's User= directive
         run_cmd(
             "sudo",
             &["systemctl", "start", &format!("{service_name}.service")],
         )
         .context("Failed to start runner service")?;
     }
+
     Ok(())
 }
 
-pub fn stop_runner(config: &Config, scope: &RunnerScope) -> Result<()> {
-    let dir = config.instance_dir(scope);
-    if !dir.exists() {
-        anyhow::bail!("No runner configured for {scope}");
-    }
+fn stop_instance(config: &Config, instance: &RunnerInstance) -> Result<()> {
+    let service_name = instance.service_name.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "No service configured for runner '{}'",
+            instance.runner_name
+        )
+    })?;
 
-    // Get service name
-    let instances = list_instances(config);
-    let instance = instances
-        .iter()
-        .find(|i| &i.scope == scope)
-        .ok_or_else(|| anyhow::anyhow!("Runner not found for {scope}"))?;
-
-    let service_name = instance
-        .service_name
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("No service configured for {scope}"))?;
-
-    println!("Stopping {scope}...");
+    println!("Stopping {} ({})...", instance.runner_name, instance.scope);
 
     if config.runner_os == "darwin" {
-        // macOS: use launchctl to stop the service
         let (service_label, service_target) =
             parse_macos_service(service_name, &config.runner_user)?;
 
-        // Use launchctl kill to stop the service (keeps it loaded)
-        // or bootout to stop and unload (for full stop)
         run_cmd("sudo", &["launchctl", "kill", "SIGTERM", &service_target])
-            .or_else(|_| {
-                // Fallback: try bootout to stop and unload
-                run_cmd("sudo", &["launchctl", "bootout", &service_target])
-            })
+            .or_else(|_| run_cmd("sudo", &["launchctl", "bootout", &service_target]))
             .map_err(|_| anyhow::anyhow!("Failed to stop service {service_label}"))
             .context("Failed to stop runner service")?;
     } else {
-        // Linux: use systemctl for system service
         run_cmd(
             "sudo",
             &["systemctl", "stop", &format!("{service_name}.service")],
         )
         .context("Failed to stop runner service")?;
     }
+
     Ok(())
 }
 
-pub fn restart_runner(config: &Config, scope: &RunnerScope) -> Result<()> {
-    stop_runner(config, scope)?;
-    start_runner(config, scope)?;
+pub fn start_runner(config: &Config, selector: &str) -> Result<()> {
+    let instance = find_instance(config, selector)?;
+    start_instance(config, &instance)
+}
+
+pub fn stop_runner(config: &Config, selector: &str) -> Result<()> {
+    let instance = find_instance(config, selector)?;
+    stop_instance(config, &instance)
+}
+
+pub fn restart_runner(config: &Config, selector: &str) -> Result<()> {
+    let instance = find_instance(config, selector)?;
+    stop_instance(config, &instance)?;
+    start_instance(config, &instance)?;
     Ok(())
 }
 
 pub fn start_all(config: &Config) {
     for instance in list_instances(config) {
-        if let Err(e) = start_runner(config, &instance.scope) {
-            eprintln!("Failed to start {}: {e}", instance.scope);
+        if let Err(e) = start_instance(config, &instance) {
+            eprintln!(
+                "Failed to start {} ({}): {e}",
+                instance.runner_name, instance.scope
+            );
         }
     }
 }
 
 pub fn stop_all(config: &Config) {
     for instance in list_instances(config) {
-        if let Err(e) = stop_runner(config, &instance.scope) {
-            eprintln!("Failed to stop {}: {e}", instance.scope);
+        if let Err(e) = stop_instance(config, &instance) {
+            eprintln!(
+                "Failed to stop {} ({}): {e}",
+                instance.runner_name, instance.scope
+            );
         }
     }
 }
 
 pub fn restart_all(config: &Config) {
     for instance in list_instances(config) {
-        if let Err(e) = restart_runner(config, &instance.scope) {
-            eprintln!("Failed to restart {}: {e}", instance.scope);
+        if let Err(e) =
+            stop_instance(config, &instance).and_then(|_| start_instance(config, &instance))
+        {
+            eprintln!(
+                "Failed to restart {} ({}): {e}",
+                instance.runner_name, instance.scope
+            );
         }
     }
 }
 
-pub fn get_runner_logs(config: &Config, scope: &RunnerScope, lines: u32) -> Result<String> {
-    let dir = config.instance_dir(scope);
-    if !dir.exists() {
-        anyhow::bail!("No runner configured for {scope}");
-    }
+pub fn get_runner_logs(config: &Config, selector: &str, lines: u32) -> Result<String> {
+    let instance = find_instance(config, selector)?;
+    let dir = &instance.dir;
 
     if config.runner_os == "darwin" {
-        // macOS: read from _diag directory
         let diag_dir = dir.join("_diag");
+
         if diag_dir.exists() {
             let mut log_files: Vec<_> = fs::read_dir(&diag_dir)?
                 .flatten()
@@ -553,6 +656,7 @@ pub fn get_runner_logs(config: &Config, scope: &RunnerScope, lines: u32) -> Resu
                         && e.file_name().to_string_lossy().ends_with(".log")
                 })
                 .collect();
+
             log_files.sort_by_key(|e| {
                 std::cmp::Reverse(e.metadata().ok().and_then(|m| m.modified().ok()))
             });
@@ -561,13 +665,18 @@ pub fn get_runner_logs(config: &Config, scope: &RunnerScope, lines: u32) -> Resu
                 let content = fs::read_to_string(log_file.path())?;
                 let log_lines: Vec<&str> = content.lines().collect();
                 let start = log_lines.len().saturating_sub(lines as usize);
-                return Ok(log_lines[start..].join("\n"));
+
+                return Ok(log_lines[start..].join(
+                    "
+",
+                ));
             }
         }
+
         Ok("No runner logs found.".to_string())
     } else {
-        // Linux: use journalctl
-        let service = read_service_name(&dir);
+        let service = read_service_name(dir);
+
         if let Some(svc) = service {
             let output = Command::new("sudo")
                 .args([
@@ -579,10 +688,11 @@ pub fn get_runner_logs(config: &Config, scope: &RunnerScope, lines: u32) -> Resu
                     "--no-pager",
                 ])
                 .output()?;
+
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
         } else {
-            // Fallback to _diag
             let diag_dir = dir.join("_diag");
+
             if diag_dir.exists() {
                 let mut log_files: Vec<_> = fs::read_dir(&diag_dir)?
                     .flatten()
@@ -591,16 +701,23 @@ pub fn get_runner_logs(config: &Config, scope: &RunnerScope, lines: u32) -> Resu
                             && e.file_name().to_string_lossy().ends_with(".log")
                     })
                     .collect();
+
                 log_files.sort_by_key(|e| {
                     std::cmp::Reverse(e.metadata().ok().and_then(|m| m.modified().ok()))
                 });
+
                 if let Some(log_file) = log_files.first() {
                     let content = fs::read_to_string(log_file.path())?;
                     let log_lines: Vec<&str> = content.lines().collect();
                     let start = log_lines.len().saturating_sub(lines as usize);
-                    return Ok(log_lines[start..].join("\n"));
+
+                    return Ok(log_lines[start..].join(
+                        "
+",
+                    ));
                 }
             }
+
             Ok("No logs found.".to_string())
         }
     }
@@ -731,14 +848,24 @@ pub fn import_runner(config: &Config, path: &str, scope_override: Option<&str>) 
         }
     };
 
+    let runner_name = read_runner_name(&source_path).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Could not determine runner name from {}",
+            source_path.join(".runner").display()
+        )
+    })?;
+
     println!("Importing runner for {scope}...");
+    println!("  Runner: {runner_name}");
     println!("  Source: {}", source_path.display());
 
-    // Check if already managed
-    let target_dir = config.instance_dir(&scope);
+    // A GitHub scope can contain multiple local runners.
+    // Key the managed instance by both scope and runner name.
+    let target_dir = config.instance_dir_named(&scope, &runner_name);
     if target_dir.exists() {
         anyhow::bail!(
-            "Runner already configured for {} at {}",
+            "Runner '{}' already configured for {} at {}",
+            runner_name,
             scope,
             target_dir.display()
         );
@@ -789,6 +916,7 @@ pub fn import_runner(config: &Config, path: &str, scope_override: Option<&str>) 
 
     println!();
     println!("Runner imported for {scope}");
+    println!("  Runner:   {runner_name}");
     println!(
         "  Instance: {} -> {}",
         target_dir.display(),
